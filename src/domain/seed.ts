@@ -18,6 +18,7 @@ export const EQUIPMENT_STAT_SEEDS: StatDefinition[] = [
   eq('S010', '側面の最大部隊数', 50),
   eq('S011', '正面を攻撃する時の部隊の戦闘力', 20),
   eq('S012', '側面を攻撃する時の部隊の戦闘力', 20),
+  { id: 'S013', name: '中庭攻撃時に受けるレベル10乙女の援軍', category: 'equipment', cap: null, unit: '人', capStatus: 'unknown', description: '中庭攻撃時に受けるレベル10乙女の援軍人数。624や654などを登録。上限は未確認。' },
 ]
 
 const gem = (id: string, name: string, description = ''): StatDefinition => ({

@@ -13,6 +13,7 @@ const error = ref(''), saving = ref(false), createdAt = ref('')
 const editId = computed(() => typeof route.params.id === 'string' ? route.params.id : '')
 const choices = computed(() => stats.value.filter(s => s.category === (props.kind === 'equipment' ? 'equipment' : 'gem')).map(s => ({ title: s.name, value: s.id })))
 const slots = SLOT_TYPES.map(s => ({ title: SLOT_LABELS[s], value: s }))
+const effectUnit = (id: string) => stats.value.find(s => s.id === id)?.unit || '%'
 onMounted(async () => {
   stats.value = await useDb().repo('stats').getAll()
   if (!editId.value) return
@@ -56,7 +57,7 @@ async function save() {
     <h3 class="text-subtitle-1 mb-2">効果（装備は3～4件）</h3>
     <v-row v-for="(effect, i) in effects" :key="i" dense align="center">
       <v-col cols="12" sm="7"><v-select v-model="effect.statId" :items="choices" label="効果" density="comfortable" /></v-col>
-      <v-col cols="9" sm="4"><v-text-field v-model.number="effect.value" type="number" step="0.1" min="0" label="効果値 (%)" density="comfortable" /></v-col>
+      <v-col cols="9" sm="4"><v-text-field v-model.number="effect.value" type="number" step="0.1" min="0"  :label="`効果値 (${effectUnit(effect.statId)})`" density="comfortable" /></v-col>
       <v-col cols="3" sm="1"><v-btn icon="mdi-close" variant="text" size="small" :disabled="effects.length <= 1" @click="effects.splice(i, 1)" /></v-col>
     </v-row>
     <v-btn class="mb-4" variant="outlined" :disabled="kind === 'equipment' && effects.length >= 4" @click="addEffect">効果を追加</v-btn>

@@ -37,7 +37,10 @@ export const useAppStore = defineStore('app', {
 
 /** 初回起動時のみ初期データ投入（既存データは上書きしない） */
 export async function seedIfEmpty(db: Database): Promise<void> {
-  if ((await db.repo('stats').count()) === 0) await db.repo('stats').bulkPut(STAT_SEEDS)
+  // Add only missing built-in effects, preserving all existing user data.
+  const existing = new Set((await db.repo('stats').getAll()).map(s => s.id))
+  const missing = STAT_SEEDS.filter(s => !existing.has(s.id))
+  if (missing.length) await db.repo('stats').bulkPut(missing)
   if (!(await db.repo('settings').get('app'))) {
     await db.repo('settings').put({ id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'default' })
   }

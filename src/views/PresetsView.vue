@@ -12,7 +12,7 @@ const defaults = [
 async function reload() { presets.value = await useDb().repo('presets').getAll(); stats.value = await useDb().repo('stats').getAll() }
 onMounted(reload)
 function fresh(): BuildPreset {
-  return { id: crypto.randomUUID(), name: '', targets: [], priorityStats: [], defaultCount: 1, priority: 1, description: '' }
+  return { id: crypto.randomUUID(), name: '', targets: [], priorityStats: [], maximizeStats: [], defaultCount: 1, priority: 1, description: '' }
 }
 function start(p?: BuildPreset) { editing.value = p ? JSON.parse(JSON.stringify(p)) as BuildPreset : fresh(); error.value = '' }
 async function seed() {

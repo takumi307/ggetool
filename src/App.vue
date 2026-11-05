@@ -22,7 +22,7 @@ onMounted(() => { app.init() })
 <template>
   <v-app>
     <v-navigation-drawer v-if="mdAndUp" permanent width="240">
-      <v-list-item title="E4K Commander Builder" subtitle="Phase 1" class="py-4" />
+      <v-list-item title="E4K Commander Builder" subtitle="司令官装備・ジェム最適化" class="py-4" />
       <v-divider />
       <v-list nav density="comfortable">
         <v-list-item

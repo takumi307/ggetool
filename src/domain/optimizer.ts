@@ -41,7 +41,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i]
     return false
   }
-  let best: OptimizationResult | null = null
+  const bestState: { value: OptimizationResult | null } = { value: null }
   let bestScore: number[] | null = null
   let evaluated = 0
   let stopped = false
@@ -64,7 +64,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
       statId: t.statId, required: t.minValue, actual: capped(t.statId, totals),
       missing: Math.max(0, t.minValue - capped(t.statId, totals))
     }))
-    best = {
+    bestState.value = {
       equipmentIds: Object.fromEntries(selected.map(e => [e.slotType, e.id])),
       gemAssignments: assignments.map(a => ({ ...a })),
       totals: { ...totals },
@@ -96,6 +96,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     }
   }
   assignEquipment(0)
-  if (best) { best.evaluated = evaluated; best.approximate = stopped }
-  return best
+  const result = bestState.value
+  if (result !== null) { result.evaluated = evaluated; result.approximate = stopped }
+  return result
 }

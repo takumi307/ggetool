@@ -22,6 +22,7 @@ function start(s?: StatDefinition) {
 }
 async function save() {
   if (!editing.value) return
+  error.value = ''
   const source = editing.value
   const value = source.capStatus === 'known'
     ? (source.cap === null || String(source.cap).trim() === '' ? Number.NaN : Number(source.cap))
@@ -73,8 +74,8 @@ async function remove(s: StatDefinition) {
       </div>
     </div>
   </v-card>
-  <v-dialog :model-value="!!editing" max-width="580" @update:model-value="v => { if (!v) editing = null }">
-    <v-card v-if="editing" class="pa-4">
+  <v-dialog :model-value="!!editing" max-width="580" scrollable @update:model-value="v => { if (!v) editing = null }">
+    <v-card v-if="editing" class="pa-4" color="surface" elevation="16">
       <h3 class="text-h6 mb-3">効果の編集</h3>
       <v-text-field v-model="editing.name" label="効果名" />
       <v-select v-model="editing.category" :items="categories" label="区分" />

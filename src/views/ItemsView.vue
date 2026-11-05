@@ -2,11 +2,22 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
-import { SLOT_LABELS, type Equipment, type Gem, type StatDefinition } from '@/domain'
+import { SLOT_LABELS, SLOT_TYPES, type Equipment, type Gem, type StatDefinition } from '@/domain'
 const props = defineProps<{ kind: 'equipment' | 'gems' }>()
 const router = useRouter(), app = useAppStore()
 const items = ref<(Equipment | Gem)[]>([]), stats = ref<StatDefinition[]>([]), assigned = ref<string[]>([]), error = ref('')
 const title = computed(() => props.kind === 'equipment' ? '装備管理' : 'ジェム管理')
+const keyword = ref(''), slotFilter = ref('all'), showAssigned = ref('all')
+const visible = computed(() => items.value.filter(item => {
+  if (props.kind === 'equipment' && slotFilter.value !== 'all' && 'slotType' in item && item.slotType !== slotFilter.value) return false
+  if (showAssigned.value === 'unused' && assigned.value.includes(item.id)) return false
+  if (showAssigned.value === 'assigned' && !assigned.value.includes(item.id)) return false
+  const query = keyword.value.trim().toLocaleLowerCase()
+  return !query || (item.name + ' ' + details(item) + ' ' + item.memo).toLocaleLowerCase().includes(query)
+}))
+const slotOptions = [{ title: '全部位', value: 'all' }, ...SLOT_TYPES.map(s => ({ title: SLOT_LABELS[s], value: s }))]
+const assignedOptions = [{ title: 'すべて', value: 'all' }, { title: '未使用', value: 'unused' }, { title: '使用中', value: 'assigned' }]
+const unit = (id: string) => stats.value.find(s => s.id === id)?.unit ?? '%'
 async function reload() {
   items.value = await useDb().repo(props.kind).getAll()
   stats.value = await useDb().repo('stats').getAll()
@@ -17,7 +28,7 @@ async function reload() {
 onMounted(reload)
 watch(() => props.kind, reload)
 function details(item: Equipment | Gem) {
-  return item.effects.map(e => (stats.value.find(s => s.id === e.statId)?.name ?? e.statId) + ' ' + e.value + '%').join(' / ')
+  return item.effects.map(e => (stats.value.find(s => s.id === e.statId)?.name ?? e.statId) + ' ' + e.value + unit(e.statId)).join(' / ')
 }
 async function remove(item: Equipment | Gem) {
   error.value = ''
@@ -34,17 +45,32 @@ async function remove(item: Equipment | Gem) {
   </div>
   <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
   <v-alert v-if="!items.length" type="info" variant="tonal">まだ登録されていません。「新規登録」から追加してください。</v-alert>
-  <v-card v-for="item in items" :key="item.id" class="pa-3 mb-3">
-    <div class="d-flex ga-2 flex-wrap align-center">
-      <strong>{{ item.name }}</strong>
-      <v-chip v-if="'slotType' in item" size="small">{{ SLOT_LABELS[item.slotType] }}</v-chip>
-      <v-chip v-if="assigned.includes(item.id)" color="warning" size="small">使用中</v-chip>
-    </div>
-    <p class="text-body-2 mt-2">{{ details(item) }}</p>
-    <p v-if="item.memo" class="text-caption mt-1">{{ item.memo }}</p>
-    <div class="d-flex ga-2 mt-2">
-      <v-btn size="small" variant="outlined" @click="router.push('/' + kind + '/edit/' + item.id)">編集</v-btn>
-      <v-btn size="small" color="error" variant="text" @click="remove(item)">削除</v-btn>
-    </div>
-  </v-card>
+  <v-row dense class="mb-2">
+    <v-col cols="12" sm="5"><v-text-field v-model="keyword" label="装備名・効果で検索" prepend-inner-icon="mdi-magnify" density="compact" clearable hide-details /></v-col>
+    <v-col v-if="kind === 'equipment'" cols="6" sm="4"><v-select v-model="slotFilter" :items="slotOptions" label="部位" density="compact" hide-details /></v-col>
+    <v-col cols="6" sm="3"><v-select v-model="showAssigned" :items="assignedOptions" label="使用状況" density="compact" hide-details /></v-col>
+  </v-row>
+  <p class="text-caption mb-2">{{ visible.length }} / {{ items.length }} 件</p>
+  <v-alert v-if="items.length && !visible.length" type="info" variant="tonal">検索条件に一致するデータがありません。</v-alert>
+  <v-row dense>
+    <v-col v-for="item in visible" :key="item.id" cols="12" lg="6">
+      <v-card class="pa-3 mb-2" height="100%" variant="outlined">
+        <div class="d-flex ga-2 flex-wrap align-center mb-3">
+          <strong class="text-subtitle-1">{{ item.name }}</strong>
+          <v-chip v-if="'slotType' in item" size="small">{{ SLOT_LABELS[item.slotType] }}</v-chip>
+          <v-chip v-if="assigned.includes(item.id)" color="warning" size="small">使用中</v-chip>
+          <v-chip v-else color="success" size="small" variant="tonal">未使用</v-chip>
+        </div>
+        <div v-for="(effect, i) in item.effects" :key="i" class="d-flex justify-space-between ga-3 py-1 border-b">
+          <span class="text-body-2">{{ stats.find(s => s.id === effect.statId)?.name ?? effect.statId }}</span>
+          <strong class="text-body-2 text-no-wrap">{{ effect.value }}{{ unit(effect.statId) }}</strong>
+        </div>
+        <p v-if="item.memo" class="text-caption mt-2">{{ item.memo }}</p>
+        <div class="d-flex ga-2 mt-3">
+          <v-btn size="small" variant="outlined" @click="router.push('/' + kind + '/edit/' + item.id)">編集</v-btn>
+          <v-btn size="small" color="error" variant="text" :disabled="assigned.includes(item.id)" @click="remove(item)">削除</v-btn>
+        </div>
+      </v-card>
+    </v-col>
+  </v-row>
 </template>

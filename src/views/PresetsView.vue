@@ -66,7 +66,7 @@ async function remove(p: BuildPreset) {
     <v-btn size="small" variant="text" color="error" @click="remove(p)">削除</v-btn>
   </v-card>
   <v-dialog :model-value="!!editing" max-width="700" scrollable @update:model-value="v => { if (!v) editing = null }">
-    <v-card v-if="editing" class="pa-4" color="surface" elevation="16">
+    <v-card v-if="editing" class="pa-4" variant="elevated" color="surface" elevation="16">
       <h3 class="text-h6 mb-3">プリセット編集</h3>
       <v-text-field v-model="editing.name" label="名前" />
       <v-text-field v-model.number="editing.defaultCount" type="number" min="1" label="標準作成数" />

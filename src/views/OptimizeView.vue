@@ -3,6 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander } from '@/domain/commanderService'
+import { optimizeJoint, type JointBuild } from '@/domain/jointOptimizer'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type Gem, type StatDefinition, type SlotType } from '@/domain'
 import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
 const app = useAppStore()
@@ -11,6 +12,9 @@ const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const plans = ref<BuildPlan[]>([])
 const stopRequested = ref(false), progress = ref('')
 const batchResults = ref<{ name: string; preset: string; result: OptimizationResult }[]>([])
+const jointPreview = ref<JointBuild[]>([])
+const jointEvaluated = ref(0)
+const committing = ref(false)
 const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))
 const mode = ref<OptimizerMode>('auto')
 const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
@@ -66,73 +70,91 @@ async function run() {
 async function runPlans() {
   if (running.value) return
   running.value = true; stopRequested.value = false
-  message.value = ''; saved.value = ''; result.value = null; batchResults.value = []
+  message.value = ''; saved.value = ''; result.value = null
+  batchResults.value = []; jointPreview.value = []; jointEvaluated.value = 0
   try {
     const db = useDb()
     const [commanders, usedEq, usedGem] = await Promise.all([
       db.repo('commanders').getAll(), db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
     ])
-    const reservedEq = new Set(usedEq.map(a => a.equipmentId))
-    const reservedGem = new Set(usedGem.map(a => a.gemId))
-    const jobs = activePlans.value.map(p => ({
-      plan: p, preset: presets.value.find(x => x.id === p.presetId),
-      remaining: Math.max(0, p.count - commanders.filter(c => c.presetId === p.presetId).length)
-    }))
-    const total = jobs.reduce((n, job) => n + job.remaining, 0)
-    if (!total) { message.value = '有効な計画はすべて作成済みです'; return }
-    // Limit a single click to avoid accidentally running thousands of searches.
-    const limit = Math.min(total, 100)
-    let created = 0
-    let stoppedReason = ''
-    outer: for (const job of jobs) {
-      if (!job.preset) { stoppedReason = '計画に対応するプリセットがありません'; break }
-      for (let i = 0; i < job.remaining; i++) {
-        if (stopRequested.value || created >= limit) break outer
-        progress.value = `${job.preset.name}：${i + 1} / ${job.remaining}体目（全体 ${created} / ${total}体）`
-        await new Promise<void>(resolve => setTimeout(resolve, 0))
-        if (stopRequested.value) break outer
-        const candidate = optimizeSingle({
-          equipment: equipment.value, gems: gems.value, stats: stats.value, preset: job.preset,
-          reservedEquipmentIds: [...reservedEq], reservedGemIds: [...reservedGem], mode: mode.value
-        })
-        if (!candidate) { stoppedReason = '未使用の装備が4部位揃わないため停止しました'; break outer }
-        if (candidate.shortfalls.some(s => s.missing > 0)) {
-          stoppedReason = '目標を満たす構成が見つからなかったため停止しました（暫定探索の可能性があります）'
-          break outer
-        }
-        const name = `${job.preset.name} ${commanders.filter(c => c.presetId === job.preset!.id).length + i + 1}`
-        await saveCommander(db, name, job.preset.id, candidate)
-        for (const id of Object.values(candidate.equipmentIds)) if (id) reservedEq.add(id)
-        for (const gem of candidate.gemAssignments) reservedGem.add(gem.gemId)
-        batchResults.value.push({ name, preset: job.preset.name, result: candidate })
-        created++
+    const jobs = activePlans.value.flatMap(plan => {
+      const p = presets.value.find(x => x.id === plan.presetId)
+      if (!p) return []
+      const done = commanders.filter(c => c.presetId === plan.presetId).length
+      return Array.from({ length: Math.min(100, Math.max(0, plan.count - done)) },
+        (_, ordinal) => ({ preset: p, ordinal: done + ordinal + 1, priority: plan.priority }))
+    }).slice(0, 100)
+    if (!jobs.length) { message.value = '作成対象がありません。プリセットと計画を確認してください。'; return }
+    progress.value = '全司令官の装備配分を探索しています…'
+    const outcome = await optimizeJoint({
+      jobs, equipment: equipment.value, gems: gems.value, stats: stats.value, mode: mode.value,
+      reservedEquipmentIds: usedEq.map(a => a.equipmentId),
+      reservedGemIds: usedGem.map(a => a.gemId),
+      isCancelled: () => stopRequested.value,
+      onProgress: (done, total, evaluated) => {
+        progress.value = `全体配分を探索中：${done} / ${total}体・評価 ${evaluated.toLocaleString()} 件`
       }
-    }
-    await app.refreshCounts()
+    })
+    jointPreview.value = outcome.builds
+    jointEvaluated.value = outcome.evaluated
     progress.value = ''
-    saved.value = `${created}体を保存しました（計画の残り ${total - created}体）`
-    if (stoppedReason) message.value = stoppedReason
-    else if (stopRequested.value) message.value = '中断しました。作成済みの司令官は保存されています。'
-    else if (created < total) message.value = '1回の実行上限100体に達しました。続きは再度実行してください。'
-  } catch (e) {
-    message.value = '処理を中断しました：' + String(e) + '。保存済みの司令官は保持されます。'
+    message.value = outcome.cancelled
+      ? '探索を中断しました。途中結果は保存されていません。'
+      : `全体配分の暫定結果：${outcome.builds.length} / ${outcome.requested}体が目標達成。評価 ${outcome.evaluated.toLocaleString()} 件。保存前に内容を確認してください。`
+  } catch (e) { message.value = '全体最適化に失敗しました：' + String(e) }
+  finally { running.value = false; progress.value = '' }
+}
+async function commitJoint() {
+  if (committing.value || running.value || !jointPreview.value.length) return
+  committing.value = true; message.value = ''; saved.value = ''
+  let count = 0
+  try {
+    const db = useDb()
+    for (const entry of jointPreview.value) {
+      const name = `${entry.job.preset.name} ${entry.job.ordinal}`
+      await saveCommander(db, name, entry.job.preset.id, entry.result)
+      batchResults.value.push({ name, preset: entry.job.preset.name, result: entry.result })
+      count++
+    }
+    jointPreview.value = []
+    saved.value = `${count}体を保存しました。装備・ジェムの重複はありません。`
     await app.refreshCounts()
-  } finally { running.value = false; progress.value = '' }
+  } catch (e) {
+    message.value = `${count}体を保存したところで停止しました：${String(e)}。残りは再最適化してください。`
+    jointPreview.value = []
+    await app.refreshCounts()
+  } finally { committing.value = false }
 }
 
 </script>
 <template>
   <h2 class="text-h6 mb-3">司令官の最適化</h2>
   <v-alert type="info" variant="tonal" class="mb-4">4部位の装備と、各部位に最大1個のジェムを組み合わせます。装備・ジェムは重複使用しません。目標達成を優先し、その後に指定した効果を優先順位順で比較します。</v-alert>
-  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効なビルド作成計画があるため、実行すると優先順位順に不足分を自動作成・保存します。目標未達や装備不足で停止し、1回の実行上限は100体です。既存の保存済み司令官は変更しません。</v-alert>
+  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効なビルド作成計画の不足分を、複数司令官で装備を分配しながら探索します。達成数を優先する近似探索であり、数学的な最適解の保証はありません。最大100体を探索し、結果を確認してから保存できます。既存の司令官は変更しません。</v-alert>
   <v-select v-model="selected" :disabled="activePlans.length > 0" :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
   <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先にプリセットを登録してください。</v-alert>
   <v-select v-model="mode" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
   <div class="d-flex align-center ga-2 flex-wrap">
-    <v-btn color="primary" :disabled="(!preset && !activePlans.length) || running" :loading="running" @click="run">{{ activePlans.length ? "計画の不足分を最適化して保存" : "最適化を実行" }}</v-btn>
-    <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="stopRequested = true">次の司令官から中断</v-btn>
+    <v-btn color="primary" :disabled="(!preset && !activePlans.length) || running" :loading="running" @click="run">{{ activePlans.length ? "計画全体を最適化（プレビュー）" : "最適化を実行" }}</v-btn>
+    <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="stopRequested = true">探索を中断</v-btn>
   </div>
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
+  <v-card v-if="jointPreview.length" class="pa-4 mt-3">
+    <h3 class="text-subtitle-1 mb-2">全体最適化のプレビュー（{{ jointPreview.length }}体）</h3>
+    <p class="text-caption mb-3">近似探索・評価 {{ jointEvaluated.toLocaleString() }} 件。保存すると装備とジェムを確保します。</p>
+    <v-btn color="primary" :loading="committing" :disabled="running" @click="commitJoint">この{{ jointPreview.length }}体を保存する</v-btn>
+    <v-expansion-panels variant="accordion" class="mt-3">
+      <v-expansion-panel v-for="(entry, index) in jointPreview" :key="index" :title="entry.job.preset.name + ' ' + entry.job.ordinal">
+        <v-expansion-panel-text>
+          <div v-for="slot in SLOT_TYPES" :key="slot" class="mb-2">
+            <strong>{{ SLOT_LABELS[slot] }}：{{ eqName(entry.result.equipmentIds[slot]) }}</strong>
+            <div v-for="(effect, i) in itemEffects(slot, entry.result)" :key="i" class="text-body-2">{{ effectText(effect.statId, effect.value) }}</div>
+            <div>ジェム：{{ gemName(entry.result.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</div>
+          </div>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
+  </v-card>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
   <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み司令官を確認</router-link></v-alert>
   <v-card v-if="batchResults.length" class="pa-3 mt-4">

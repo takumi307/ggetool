@@ -75,7 +75,7 @@ async function remove(s: StatDefinition) {
     </div>
   </v-card>
   <v-dialog :model-value="!!editing" max-width="580" scrollable @update:model-value="v => { if (!v) editing = null }">
-    <v-card v-if="editing" class="pa-4" color="surface" elevation="16">
+    <v-card v-if="editing" class="pa-4" variant="elevated" color="surface" elevation="16">
       <h3 class="text-h6 mb-3">効果の編集</h3>
       <v-text-field v-model="editing.name" label="効果名" />
       <v-select v-model="editing.category" :items="categories" label="区分" />

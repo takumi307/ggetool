@@ -1,3 +1,4 @@
+import { canonicalStatId } from './statAliases'
 import { SLOT_TYPES, type BuildPreset, type Equipment, type Gem, type SlotType, type StatDefinition } from './types'
 
 export interface OptimizationResult {
@@ -34,7 +35,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   // Fast mode uses a heuristic shortlist. It never claims exact optimality.
   const priorities = [...new Set(input.preset.targets.map(t => t.statId))]
   const rank = (effects: { statId: string; value: number }[]) => effects.reduce((sum, e) => {
-    const i = priorities.indexOf(e.statId)
+    const i = priorities.map(canonicalStatId).indexOf(canonicalStatId(e.statId))
     return sum + (i < 0 ? 0 : e.value * Math.pow(2, Math.min(12, priorities.length - i)))
   }, 0)
   const slots = mode === 'fast' ? availableSlots.map(group =>
@@ -43,11 +44,11 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     ? availableGems.filter(g => g.allowedSlots.length).sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 12)
     : availableGems
   const add = (totals: Record<string, number>, effects: { statId: string; value: number }[]) => {
-    for (const effect of effects) totals[effect.statId] = (totals[effect.statId] ?? 0) + effect.value
+    for (const effect of effects) totals[canonicalStatId(effect.statId)] = (totals[canonicalStatId(effect.statId)] ?? 0) + effect.value
   }
   const capped = (id: string, totals: Record<string, number>) => Math.min(totals[id] ?? 0, caps.get(id) ?? Infinity)
   const score = (totals: Record<string, number>) => {
-    const misses = input.preset.targets.map(t => Math.max(0, t.minValue - capped(t.statId, totals)))
+    const misses = input.preset.targets.map(t => Math.max(0, t.minValue - capped(canonicalStatId(t.statId), totals)))
     const totalMiss = misses.reduce((a, b) => a + b, 0)
     // Evaluate only whether minimum targets are met and how far short they are.
     return [misses.every(m => m === 0) ? 1 : 0, -totalMiss]
@@ -76,8 +77,8 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     if (bestScore && !better(s, bestScore)) return
     bestScore = s
     const shortfalls = input.preset.targets.map(t => ({
-      statId: t.statId, required: t.minValue, actual: capped(t.statId, totals),
-      missing: Math.max(0, t.minValue - capped(t.statId, totals))
+      statId: t.statId, required: t.minValue, actual: capped(canonicalStatId(t.statId), totals),
+      missing: Math.max(0, t.minValue - capped(canonicalStatId(t.statId), totals))
     }))
     bestState.value = {
       equipmentIds: Object.fromEntries(selected.map(e => [e.slotType, e.id])),

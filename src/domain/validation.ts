@@ -2,12 +2,9 @@ import { SLOT_TYPES, type Equipment, type Gem, type StatDefinition, type EffectE
 
 export function validEffects(effects: EffectEntry[], stats: StatDefinition[], category: 'equipment' | 'gem'): string | null {
   if (!effects.length) return '効果を1件以上登録してください'
-  const used = new Set<string>()
   for (const e of effects) {
     if (!stats.some(s => s.id === e.statId && s.category === category)) return '存在しない効果が含まれています'
     if (!Number.isFinite(e.value) || e.value < 0) return '効果値は0以上で入力してください'
-    if (used.has(e.statId)) return '同じ効果は重複登録できません'
-    used.add(e.statId)
   }
   return null
 }

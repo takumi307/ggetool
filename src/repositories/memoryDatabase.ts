@@ -9,7 +9,7 @@ export class MemoryDatabase implements Database {
     type T = StoreSchemas[K]
     const keyPath = STORE_KEYS[name]
     const m = () => this.data.get(name)!
-    const keyOf = (i: T) => String((i as Record<string, unknown>)[keyPath])
+    const keyOf = (i: T) => String((i as unknown as Record<string, unknown>)[keyPath])
     return {
       getAll: async () => [...m().values()].map((v) => structuredClone(v) as T),
       get: async (k) => { const v = m().get(k); return v === undefined ? undefined : (structuredClone(v) as T) },
@@ -29,7 +29,7 @@ export class MemoryDatabase implements Database {
         if (!items) continue
         const keyPath = STORE_KEYS[name]
         const next = new Map<string, unknown>()
-        items.forEach((i) => next.set(String((i as Record<string, unknown>)[keyPath]), structuredClone(i)))
+        items.forEach((i) => next.set(String((i as unknown as Record<string, unknown>)[keyPath]), structuredClone(i)))
         this.data.set(name, next)
       }
     } catch (e) {

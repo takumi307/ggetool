@@ -28,8 +28,11 @@ function addEffect() { effects.value.push({ statId: '', value: 0 }) }
 async function save() {
   error.value = ''
   const now = new Date().toISOString()
+  const id = editId.value || crypto.randomUUID()
+  // Equipment names are optional; use a stable generated label for unnamed entries.
+  const resolvedName = name.value.trim() || (props.kind === 'equipment' ? `${SLOT_LABELS[slotType.value]}-${id.slice(0, 8)}` : '')
   const base = {
-    id: editId.value || crypto.randomUUID(), name: name.value.trim(), memo: memo.value,
+    id, name: resolvedName, memo: memo.value,
     effects: effects.value.map(e => ({ statId: e.statId, value: Number(e.value) })),
     createdAt: createdAt.value || now, updatedAt: now
   }
@@ -51,7 +54,7 @@ async function save() {
   <h2 class="text-h6 mb-4">{{ editId ? '編集' : '新規登録' }}：{{ kind === 'equipment' ? '装備' : 'ジェム' }}</h2>
   <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
   <v-form @submit.prevent="save">
-    <v-text-field v-model="name" label="名前" required />
+    <v-text-field v-model="name" :label="kind === 'equipment' ? '装備名（任意）' : 'ジェム名'" :required="kind !== 'equipment'" :hint="kind === 'equipment' ? '空欄なら部位と識別番号から自動で名前を付けます' : undefined" persistent-hint />
     <v-select v-if="kind === 'equipment'" v-model="slotType" :items="slots" label="装備部位" />
     <v-select v-else v-model="allowedSlots" :items="slots" multiple chips label="装着可能部位" />
     <h3 class="text-subtitle-1 mb-2">効果（装備は3～4件）</h3>

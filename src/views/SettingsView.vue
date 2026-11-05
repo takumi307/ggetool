@@ -14,7 +14,10 @@ const algorithms = [
   { title: '高速（候補を絞り込み）', value: 'fast' }
 ]
 onMounted(async () => {
-  try { settings.value = await useDb().repo('settings').get('app') ?? { id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'auto' } }
+  try {
+    settings.value = await useDb().repo('settings').get('app') ?? { id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'auto' }
+    if (settings.value.optimizerId === 'default') settings.value.optimizerId = 'auto'
+  }
   catch (e) { error.value = String(e) }
 })
 async function save() {

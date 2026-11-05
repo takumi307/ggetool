@@ -60,7 +60,27 @@ async function save() {
     <h3 class="text-subtitle-1 mb-2">効果（装備は3～4件）</h3>
     <p class="text-caption mb-3">同じ効果を複数選択できます。数値は合算して計算します。</p>
     <v-row v-for="(effect, i) in effects" :key="i" dense align="center">
-      <v-col cols="12" sm="7"><v-select v-model="effect.statId" :items="choices" label="効果" density="comfortable" /></v-col>
+      <v-col cols="12" sm="7">
+        <v-select
+          v-model="effect.statId"
+          :items="choices"
+          label="効果"
+          density="comfortable"
+          class="effect-select"
+          :menu-props="{ maxHeight: 440 }"
+        >
+          <template #item="{ props: itemProps, item }">
+            <v-list-item v-bind="itemProps" class="effect-option">
+              <template #title>
+                <span class="effect-option-name">{{ item.title }}</span>
+              </template>
+            </v-list-item>
+          </template>
+          <template #selection="{ item }">
+            <span class="effect-selection-name">{{ item.title }}</span>
+          </template>
+        </v-select>
+      </v-col>
       <v-col cols="9" sm="4"><v-text-field v-model.number="effect.value" type="number" step="0.1" min="0"  :label="`効果値 (${effectUnit(effect.statId)})`" density="comfortable" /></v-col>
       <v-col cols="3" sm="1"><v-btn icon="mdi-close" variant="text" size="small" :disabled="effects.length <= 1" @click="effects.splice(i, 1)" /></v-col>
     </v-row>
@@ -72,3 +92,33 @@ async function save() {
     </div>
   </v-form>
 </template>
+
+<style scoped>
+/* Long GGE stat labels must remain readable on narrow phone screens. */
+.effect-option :deep(.v-list-item-title),
+.effect-option-name,
+.effect-selection-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-overflow: clip;
+}
+.effect-option :deep(.v-list-item-title) {
+  line-height: 1.45;
+}
+.effect-option {
+  min-height: 48px;
+  height: auto;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.effect-select :deep(.v-field__input) {
+  height: auto;
+  min-height: 48px;
+}
+.effect-selection-name {
+  display: block;
+  line-height: 1.45;
+  padding: 6px 0;
+}
+</style>

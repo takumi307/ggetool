@@ -42,8 +42,6 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   const gems = mode === 'fast'
     ? availableGems.filter(g => g.allowedSlots.length).sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 12)
     : availableGems
-  // Only minimum targets influence ranking; legacy maximization fields are ignored.
-  const order = [...new Set(input.preset.targets.map(t => t.statId))]
   const add = (totals: Record<string, number>, effects: { statId: string; value: number }[]) => {
     for (const effect of effects) totals[effect.statId] = (totals[effect.statId] ?? 0) + effect.value
   }
@@ -51,8 +49,8 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   const score = (totals: Record<string, number>) => {
     const misses = input.preset.targets.map(t => Math.max(0, t.minValue - capped(t.statId, totals)))
     const totalMiss = misses.reduce((a, b) => a + b, 0)
-    // Target achievement first, then lexicographic maximization.
-    return [misses.every(m => m === 0) ? 1 : 0, -totalMiss, ...order.map(id => capped(id, totals))]
+    // Evaluate only whether minimum targets are met and how far short they are.
+    return [misses.every(m => m === 0) ? 1 : 0, -totalMiss]
   }
   const better = (a: number[], b: number[]) => {
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i]

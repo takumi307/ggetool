@@ -39,8 +39,9 @@ export const GEM_STAT_SEEDS: StatDefinition[] = [
   gem('G005', 'NPCのターゲットを攻撃する際の遠隔兵の戦闘力'),
   gem('G006', 'NPCのターゲットを攻撃する際の正面の最大部隊数'),
   gem('G007', 'NPCのターゲットを攻撃する際の側面の最大部隊数'),
-  gem('G008', '中庭で攻撃する際の戦闘力（ジェム）'),
+  gem('G008', '中庭で攻撃する際の戦闘力（ジェム）', '装備S003と合算し、合計100%上限を適用'),
   gem('G009', 'NPCのターゲットの中庭を攻撃する際の戦闘力'),
+  gem('G010', '攻撃する際の側面の最大部隊数'),
 ]
 
 export const STAT_SEEDS: StatDefinition[] = [...EQUIPMENT_STAT_SEEDS, ...GEM_STAT_SEEDS]

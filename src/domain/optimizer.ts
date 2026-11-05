@@ -9,7 +9,9 @@ export interface OptimizationResult {
   evaluated: number
   approximate: boolean
 }
+export type OptimizerMode = 'auto' | 'precise' | 'fast'
 export interface OptimizeInput {
+  mode?: OptimizerMode
   equipment: Equipment[]
   gems: Gem[]
   stats: StatDefinition[]
@@ -21,11 +23,25 @@ export interface OptimizeInput {
 export function optimizeSingle(input: OptimizeInput): OptimizationResult | null {
   const reservedEq = new Set(input.reservedEquipmentIds ?? [])
   const reservedGem = new Set(input.reservedGemIds ?? [])
-  const slots = SLOT_TYPES.map(slot => input.equipment.filter(e => e.slotType === slot && !reservedEq.has(e.id)))
-  if (slots.some(s => !s.length)) return null
-  const gems = input.gems.filter(g => !reservedGem.has(g.id))
+  const availableSlots = SLOT_TYPES.map(slot => input.equipment.filter(e => e.slotType === slot && !reservedEq.has(e.id)))
+  if (availableSlots.some(s => !s.length)) return null
+  const availableGems = input.gems.filter(g => !reservedGem.has(g.id))
   const caps = new Map(input.stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap as number]))
-  const max = Math.max(1, Math.floor(input.maxEvaluations ?? 100000))
+  const countEstimate = availableSlots.reduce((n, group) => n * group.length, 1) * Math.pow(availableGems.length + 1, 4)
+  const mode: OptimizerMode = input.mode === 'precise' || input.mode === 'fast' ? input.mode
+    : countEstimate <= 100000 ? 'precise' : 'fast'
+  const max = Math.max(1, Math.floor(input.maxEvaluations ?? (mode === 'precise' ? 1000000 : 50000)))
+  // Fast mode uses a heuristic shortlist. It never claims exact optimality.
+  const priorities = [...new Set([...input.preset.targets.map(t => t.statId), ...input.preset.priorityStats, ...input.preset.maximizeStats])]
+  const rank = (effects: { statId: string; value: number }[]) => effects.reduce((sum, e) => {
+    const i = priorities.indexOf(e.statId)
+    return sum + (i < 0 ? 0 : e.value * Math.pow(2, Math.min(12, priorities.length - i)))
+  }, 0)
+  const slots = mode === 'fast' ? availableSlots.map(group =>
+    [...group].sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 6)) : availableSlots
+  const gems = mode === 'fast'
+    ? availableGems.filter(g => g.allowedSlots.length).sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 12)
+    : availableGems
   const order = [...new Set([...input.preset.priorityStats, ...input.preset.maximizeStats])]
   const add = (totals: Record<string, number>, effects: { statId: string; value: number }[]) => {
     for (const effect of effects) totals[effect.statId] = (totals[effect.statId] ?? 0) + effect.value
@@ -97,6 +113,6 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   }
   assignEquipment(0)
   const result = bestState.value
-  if (result !== null) { result.evaluated = evaluated; result.approximate = stopped }
+  if (result !== null) { result.evaluated = evaluated; result.approximate = stopped || mode === 'fast' }
   return result
 }

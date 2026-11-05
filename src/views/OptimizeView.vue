@@ -3,9 +3,11 @@ import { onMounted, ref, computed } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander } from '@/domain/commanderService'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type Equipment, type Gem, type StatDefinition } from '@/domain'
-import { optimizeSingle, type OptimizationResult } from '@/domain/optimizer'
+import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
 const app = useAppStore()
 const commanderName = ref(''), saved = ref(''), saving = ref(false)
+const mode = ref<OptimizerMode>('auto')
+const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
 const presets = ref<BuildPreset[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), stats = ref<StatDefinition[]>([])
 const selected = ref(''), result = ref<OptimizationResult | null>(null), message = ref(''), running = ref(false)
 const preset = computed(() => presets.value.find(p => p.id === selected.value))
@@ -18,6 +20,8 @@ onMounted(async () => {
     db.repo('presets').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll()
   ])
   selected.value = presets.value[0]?.id ?? ''
+  const settings = await db.repo('settings').get('app')
+  if (settings?.optimizerId === 'precise' || settings?.optimizerId === 'fast') mode.value = settings.optimizerId
 })
 async function saveResult() {
   if (!result.value || !preset.value) return
@@ -42,7 +46,7 @@ async function run() {
     result.value = optimizeSingle({
       equipment: equipment.value, gems: gems.value, stats: stats.value, preset: preset.value,
       reservedEquipmentIds: usedEq.map(a => a.equipmentId), reservedGemIds: usedGem.map(a => a.gemId),
-      maxEvaluations: 100000
+      mode: mode.value
     })
     if (!result.value) message.value = '各部位に未使用の装備が1件以上必要です'
     else commanderName.value = (preset.value?.name ?? '司令官') + ' ' + new Date().toLocaleDateString('ja-JP')
@@ -54,6 +58,7 @@ async function run() {
   <v-alert type="info" variant="tonal" class="mb-4">4部位の装備と、各部位に最大1個のジェムを組み合わせます。装備・ジェムは重複使用しません。目標達成を優先し、その後に指定した効果を優先順位順で比較します。</v-alert>
   <v-select v-model="selected" :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
   <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先にプリセットを登録してください。</v-alert>
+  <v-select v-model="mode" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
   <v-btn color="primary" :disabled="!preset || running" :loading="running" @click="run">最適化を実行</v-btn>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
   <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み司令官を確認</router-link></v-alert>
@@ -64,7 +69,7 @@ async function run() {
       <v-btn color="primary" :loading="saving" @click="saveResult">この構成を保存して装備を確保</v-btn>
     </v-card>
     <v-alert :type="result.approximate ? 'warning' : 'success'" class="mt-4">
-      {{ result.approximate ? '探索上限に到達：暫定最良解（最適性は保証されません）' : '全候補を探索しました' }}
+      {{ result.approximate ? '暫定最良解（候補絞り込み・探索打切りの可能性があり、最適性は保証されません）' : '全候補を探索しました' }}
       ／ 評価 {{ result.evaluated.toLocaleString() }} 件
     </v-alert>
     <v-card class="pa-3 mt-3">

@@ -8,15 +8,23 @@ const settings = ref<AppSettings | null>(null)
 const error = ref('')
 const notice = ref('')
 const busy = ref(false)
-const algorithms = [{ title: '標準探索（最大10万候補）', value: 'default' }]
+const algorithms = [
+  { title: '自動（推奨）', value: 'auto' },
+  { title: '高精度（最大100万候補）', value: 'precise' },
+  { title: '高速（候補を絞り込み）', value: 'fast' }
+]
 onMounted(async () => {
-  try { settings.value = await useDb().repo('settings').get('app') ?? { id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'default' } }
+  try {
+    settings.value = await useDb().repo('settings').get('app') ?? { id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'auto' }
+    if (settings.value.optimizerId === 'default') settings.value.optimizerId = 'auto'
+  }
   catch (e) { error.value = String(e) }
 })
 async function save() {
   if (!settings.value) return
   busy.value = true; error.value = ''; notice.value = ''
   try {
+    if (settings.value.optimizerId === 'default') settings.value.optimizerId = 'auto'
     if (!algorithms.some(a => a.value === settings.value?.optimizerId)) throw Error('未対応の探索方式です')
     await useDb().repo('settings').put({ ...settings.value, schemaVersion: SCHEMA_VERSION })
     notice.value = '設定を保存しました'
@@ -45,7 +53,7 @@ async function save() {
   <v-card class="pa-4 mb-4">
     <h3 class="text-subtitle-1 font-weight-bold mb-3">最適化設定</h3>
     <v-select v-if="settings" v-model="settings.optimizerId" :items="algorithms" label="探索方式" />
-    <p class="text-caption mb-3">現在は標準探索のみ対応しています。候補数の上限に達した場合、結果は暫定解として表示されます。</p>
+    <p class="text-caption mb-3">自動は候補数に応じて方式を選択。高精度は最大100万件を探索し、全候補を調べた場合のみ最適性を保証。高速は候補を事前に絞るため常に暫定解です。大規模な探索は端末が一時的に重くなる場合があります。</p>
     <v-btn color="primary" :loading="busy" :disabled="!settings" @click="save">設定を保存</v-btn>
   </v-card>
   <v-card class="pa-4">

@@ -10,7 +10,7 @@ export default createRouter({
     { path: '/gems/edit/:id?', name: 'gem-edit', component: () => import('@/views/ItemEditView.vue'), props: { kind: 'gems' }, meta: { title: 'ジェム登録・編集', phase: 2 } },
     { path: '/stats', name: 'stats', component: () => import('@/views/StatsView.vue'), meta: { title: 'ステータス・上限管理', phase: 2 } },
     { path: '/presets', name: 'presets', component: () => import('@/views/PresetsView.vue'), meta: { title: 'ビルドプリセット管理', phase: 2 } },
-    { path: '/plan', name: 'plan', component: Placeholder, meta: { title: 'ビルド作成計画', phase: 4, desc: '作成個数と優先順位の設定。' } },
+    { path: '/plan', name: 'plan', component: () => import('@/views/PlanView.vue'), meta: { title: 'ビルド作成計画', phase: 4 } },
     { path: '/optimize', name: 'optimize', component: () => import('@/views/OptimizeView.vue'), meta: { title: '最適化実行', phase: 3 } },
     { path: '/result', name: 'result', component: () => import('@/views/ResultView.vue'), meta: { title: '最適化結果', phase: 3 } },
     { path: '/commanders', name: 'commanders', component: () => import('@/views/CommandersView.vue'), meta: { title: '保存済み司令官一覧', phase: 3 } },

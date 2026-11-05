@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander } from '@/domain/commanderService'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type Equipment, type Gem, type StatDefinition } from '@/domain'
 import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
 const app = useAppStore()
+const route = useRoute()
 const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const mode = ref<OptimizerMode>('auto')
 const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
@@ -19,7 +21,8 @@ onMounted(async () => {
   ;[presets.value, equipment.value, gems.value, stats.value] = await Promise.all([
     db.repo('presets').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll()
   ])
-  selected.value = presets.value[0]?.id ?? ''
+  const requestedPresetId = typeof route.query.presetId === 'string' ? route.query.presetId : ''
+  selected.value = presets.value.some(p => p.id === requestedPresetId) ? requestedPresetId : (presets.value[0]?.id ?? '')
   const settings = await db.repo('settings').get('app')
   if (settings?.optimizerId === 'precise' || settings?.optimizerId === 'fast') mode.value = settings.optimizerId
 })

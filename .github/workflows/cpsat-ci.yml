@@ -1,0 +1,31 @@
+name: CP-SAT service checks
+on:
+  push:
+    paths:
+      - 'optimizer-service/**'
+      - '.github/workflows/cpsat-ci.yml'
+  pull_request:
+    paths:
+      - 'optimizer-service/**'
+      - '.github/workflows/cpsat-ci.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: optimizer-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: optimizer-service/requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q
+      - run: python -m compileall -q app.py
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t e4k-cpsat:test optimizer-service

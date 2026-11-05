@@ -9,6 +9,8 @@ const route = useRoute(), router = useRouter()
 const builds = ref<CommanderBuild[]>([])
 const equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([])
 const selectedId = ref(''), error = ref('')
+const compareId = ref('')
+const comparison = computed(() => builds.value.find(b => b.id === compareId.value))
 const selected = computed(() => builds.value.find(b => b.id === selectedId.value))
 const preset = computed(() => presets.value.find(p => p.id === selected.value?.presetId))
 const statName = (id: string) => stats.value.find(s => s.id === id)?.name ?? id
@@ -21,6 +23,19 @@ const numericStats = computed(() => Object.entries(selected.value?.calculatedSta
     const knownCap = cap?.capStatus === 'known' && cap.cap !== null ? cap.cap : null
     return { id, raw: value as number, effective: knownCap === null ? value as number : Math.min(value as number, knownCap), cap: knownCap, unit: cap?.unit ?? '%' }
   }))
+const compareRows = computed(() => {
+  if (!selected.value || !comparison.value) return []
+  const keys = new Set([...Object.keys(selected.value.calculatedStats), ...Object.keys(comparison.value.calculatedStats)])
+  return [...keys].filter(id => !id.startsWith('_')).map(id => {
+    const left = selected.value?.calculatedStats[id]
+    const right = comparison.value?.calculatedStats[id]
+    const cap = stats.value.find(s => s.id === id)
+    const limit = cap?.capStatus === 'known' && cap.cap !== null ? cap.cap : Infinity
+    const a = typeof left === 'number' ? Math.min(left, limit) : 0
+    const b = typeof right === 'number' ? Math.min(right, limit) : 0
+    return { id, a, b, delta: a - b, unit: cap?.unit ?? '%' }
+  }).filter(row => row.a !== 0 || row.b !== 0).sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta))
+})
 const targetRows = computed(() => (preset.value?.targets ?? []).map(t => {
   const stat = numericStats.value.find(s => s.id === t.statId)
   const actual = stat?.effective ?? 0
@@ -50,6 +65,26 @@ function showCommanderList() { router.push('/commanders') }
   <template v-if="builds.length">
     <v-select v-model="selectedId" :items="builds.map(b => ({ title: b.name, value: b.id }))" label="表示する司令官" />
     <template v-if="selected">
+      <v-card class="pa-4 mb-3">
+        <h3 class="text-subtitle-1 font-weight-bold mb-2">司令官の比較</h3>
+        <v-select v-model="compareId"
+          :items="[{ title: '比較しない', value: '' }, ...builds.filter(b => b.id !== selectedId).map(b => ({ title: b.name, value: b.id }))]"
+          label="比較する司令官" density="comfortable" hide-details />
+        <template v-if="comparison">
+          <p class="text-caption mt-3 mb-2">差分は「表示中の司令官 − 比較対象」です。既知の上限を適用した数値で比較します。</p>
+          <div class="d-flex justify-space-between text-caption font-weight-bold py-2">
+            <span>効果</span><span>現在 / 比較対象 / 差分</span>
+          </div>
+          <div v-for="row in compareRows" :key="row.id" class="d-flex justify-space-between align-center ga-3 py-2 border-b">
+            <span class="text-body-2">{{ statName(row.id) }}</span>
+            <span class="text-body-2 text-no-wrap">{{ row.a }} / {{ row.b }}{{ row.unit }}
+              <strong :class="row.delta > 0 ? 'text-success' : row.delta < 0 ? 'text-error' : ''">
+                ({{ row.delta > 0 ? '+' : '' }}{{ row.delta }}{{ row.unit }})
+              </strong>
+            </span>
+          </div>
+        </template>
+      </v-card>
       <v-card class="pa-4 mb-3">
         <h3 class="text-h6">{{ selected.name }}</h3>
         <p class="text-body-2">プリセット：{{ preset?.name ?? '不明' }}</p>

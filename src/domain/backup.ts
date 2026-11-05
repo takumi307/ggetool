@@ -56,5 +56,10 @@ export function parseBackup(text: string): BackupData {
 }
 export async function importBackup(db: Database, backup: BackupData): Promise<void> {
   // 全ストアを単一トランザクションで置換。失敗時には既存データを維持する
-  await db.replaceAll(backup.stores)
+  // Vue ref() wraps the parsed backup in reactive Proxies. IndexedDB cannot
+  // structured-clone Proxy objects, so detach the JSON data before put().
+  // JSON backup data is intentionally JSON-serializable; this also detaches
+  // nested arrays/objects while preserving the single-transaction rollback.
+  const plainStores = JSON.parse(JSON.stringify(backup.stores)) as BackupData['stores']
+  await db.replaceAll(plainStores)
 }

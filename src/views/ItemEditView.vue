@@ -58,6 +58,7 @@ async function save() {
     <v-select v-if="kind === 'equipment'" v-model="slotType" :items="slots" label="装備部位" />
     <v-select v-else v-model="allowedSlots" :items="slots" multiple chips label="装着可能部位" />
     <h3 class="text-subtitle-1 mb-2">効果（装備は3～4件）</h3>
+    <p class="text-caption mb-3">同じ効果を複数選択できます。数値は合算して計算します。</p>
     <v-row v-for="(effect, i) in effects" :key="i" dense align="center">
       <v-col cols="12" sm="7"><v-select v-model="effect.statId" :items="choices" label="効果" density="comfortable" /></v-col>
       <v-col cols="9" sm="4"><v-text-field v-model.number="effect.value" type="number" step="0.1" min="0"  :label="`効果値 (${effectUnit(effect.statId)})`" density="comfortable" /></v-col>

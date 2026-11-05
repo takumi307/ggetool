@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: e4k-cpsat-optimizer
+    runtime: docker
+    rootDir: optimizer-service
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: CORS_ORIGINS
+        sync: false

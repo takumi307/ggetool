@@ -1,3 +1,4 @@
+import { canonicalStatId } from './statAliases'
 import type { BuildPreset, Equipment, Gem, StatDefinition } from './types'
 import type { OptimizationResult } from './optimizer'
 
@@ -44,9 +45,9 @@ export async function optimizeCpSat(input: {
     headers: { 'Content-Type': 'application/json' },
     signal: input.signal,
     body: JSON.stringify({
-      equipment: input.equipment, gems: input.gems, stats: input.stats,
+      equipment: input.equipment, gems: input.gems.map(g => ({ ...g, effects: g.effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })) })), stats: input.stats,
       jobs: input.jobs.map(j => ({
-        presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority, targets: j.preset.targets
+        presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority, targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId) }))
       })),
       reservedEquipmentIds: input.reservedEquipmentIds,
       reservedGemIds: input.reservedGemIds,
@@ -83,13 +84,13 @@ export async function optimizeCpSat(input: {
     // Recalculate from local equipment to avoid trusting arbitrary API totals.
     const totals: Record<string, number> = {}
     const add = (effects: { statId: string; value: number }[]) => {
-      for (const e of effects) totals[e.statId] = (totals[e.statId] ?? 0) + e.value
+      for (const e of effects) totals[canonicalStatId(e.statId)] = (totals[canonicalStatId(e.statId)] ?? 0) + e.value
     }
     for (const slot of slots) add(eq.get(b.equipmentIds[slot]!)!.effects)
     for (const a of b.gemAssignments) add(gems.get(a.gemId)!.effects)
     const caps = new Map(input.stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap!]))
     const shortfalls = job.preset.targets.map(t => {
-      const actual = Math.min(totals[t.statId] ?? 0, caps.get(t.statId) ?? Infinity)
+      const actual = Math.min(totals[canonicalStatId(t.statId)] ?? 0, caps.get(canonicalStatId(t.statId)) ?? Infinity)
       return { statId: t.statId, required: t.minValue, actual, missing: Math.max(0, t.minValue - actual - 1e-8) }
     })
     if (shortfalls.some(s => s.missing > 1e-8)) throw new Error('APIの候補が最低目標を満たしていません')

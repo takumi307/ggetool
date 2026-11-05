@@ -50,6 +50,7 @@ async function remove(b: CommanderBuild) {
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
+    <v-btn color="primary" variant="outlined" size="small" class="mt-3 mr-2" :to="{ path: '/result', query: { id: b.id } }">結果の詳細</v-btn>
     <v-btn color="error" variant="outlined" size="small" class="mt-3" @click="remove(b)">削除して装備を解放</v-btn>
   </v-card>
 </template>

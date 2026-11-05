@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
-import { SLOT_TYPES, SLOT_LABELS, type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
+import { type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
 import { deleteCommander } from '@/domain/commanderService'
+import CommanderEquipmentPanel from '@/components/CommanderEquipmentPanel.vue'
 const app = useAppStore()
 const builds = ref<CommanderBuild[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([])
 const error = ref('')
+const expandedId = ref('')
 async function reload() {
   const db = useDb()
   ;[builds.value, equipment.value, gems.value, presets.value, stats.value] = await Promise.all([
@@ -15,8 +17,6 @@ async function reload() {
   builds.value.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 onMounted(reload)
-const eqName = (id?: string) => equipment.value.find(e => e.id === id)?.name ?? '削除済み'
-const gemName = (id?: string) => id ? gems.value.find(g => g.id === id)?.name ?? '削除済み' : 'なし'
 const presetName = (id: string) => presets.value.find(p => p.id === id)?.name ?? '削除済み'
 const statName = (id: string) => stats.value.find(s => s.id === id)?.name ?? id
 async function remove(b: CommanderBuild) {
@@ -37,10 +37,10 @@ async function remove(b: CommanderBuild) {
       <v-chip v-if="b.calculatedStats._approximate" color="warning" size="small">暫定解</v-chip>
     </div>
     <p class="text-caption">{{ new Date(b.createdAt).toLocaleString('ja-JP') }}</p>
-    <div v-for="slot in SLOT_TYPES" :key="slot" class="text-body-2 py-1">
-      {{ SLOT_LABELS[slot] }}：{{ eqName(b.equipmentIds[slot]) }}
-      <span class="text-medium-emphasis"> / ジェム：{{ gemName(b.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</span>
-    </div>
+    <v-btn variant="outlined" size="small" class="my-2" @click="expandedId = expandedId === b.id ? '' : b.id">
+      {{ expandedId === b.id ? '装備セットを閉じる' : '装備セットを見る' }}
+    </v-btn>
+    <CommanderEquipmentPanel v-if="expandedId === b.id" :build="b" :equipment="equipment" :gems="gems" :stats="stats" />
     <v-expansion-panels class="mt-2">
       <v-expansion-panel title="保存時のステータス">
         <v-expansion-panel-text>

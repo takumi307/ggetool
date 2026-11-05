@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDb } from '@/stores/app'
-import { SLOT_TYPES, SLOT_LABELS, type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
+import CommanderEquipmentPanel from '@/components/CommanderEquipmentPanel.vue'
+import { type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
 
 const route = useRoute(), router = useRouter()
 const builds = ref<CommanderBuild[]>([])
@@ -56,14 +57,7 @@ function showCommanderList() { router.push('/commanders') }
         <v-chip v-if="selected.calculatedStats._approximate" color="warning" size="small" class="mt-2">暫定解・最適性未保証</v-chip>
         <v-alert type="info" variant="tonal" density="compact" class="mt-3">表示値は保存時点のスナップショットです。装備やプリセットを後から編集しても自動再計算されません。</v-alert>
       </v-card>
-      <v-card class="pa-4 mb-3">
-        <h3 class="text-subtitle-1 font-weight-bold mb-3">装備・ジェム構成</h3>
-        <div v-for="slot in SLOT_TYPES" :key="slot" class="py-2">
-          <strong>{{ SLOT_LABELS[slot] }}</strong>：{{ eqName(selected.equipmentIds[slot]) }}
-          <p class="text-body-2 text-medium-emphasis">ジェム：{{ gemName(selected.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</p>
-          <v-divider class="mt-2" />
-        </div>
-      </v-card>
+      <CommanderEquipmentPanel :build="selected" :equipment="equipment" :gems="gems" :stats="stats" />
       <v-card class="pa-4 mb-3">
         <h3 class="text-subtitle-1 font-weight-bold mb-3">目標達成状況</h3>
         <v-alert v-if="!preset" type="warning" variant="tonal">保存時のプリセットが見つかりません。</v-alert>

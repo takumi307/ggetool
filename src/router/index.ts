@@ -13,7 +13,7 @@ export default createRouter({
     { path: '/plan', name: 'plan', component: Placeholder, meta: { title: 'ビルド作成計画', phase: 4, desc: '作成個数と優先順位の設定。' } },
     { path: '/optimize', name: 'optimize', component: () => import('@/views/OptimizeView.vue'), meta: { title: '最適化実行', phase: 3 } },
     { path: '/result', name: 'result', component: Placeholder, meta: { title: '最適化結果', phase: 3, desc: '結果の保存機能は次回実装。' } },
-    { path: '/commanders', name: 'commanders', component: Placeholder, meta: { title: '保存済み司令官一覧', phase: 3, desc: '保存した構成一覧。' } },
+    { path: '/commanders', name: 'commanders', component: () => import('@/views/CommandersView.vue'), meta: { title: '保存済み司令官一覧', phase: 3 } },
     { path: '/backup', name: 'backup', component: () => import('@/views/BackupView.vue'), meta: { title: 'JSONバックアップ・復元', phase: 2 } },
     { path: '/settings', name: 'settings', component: Placeholder, meta: { title: '設定', phase: 2, desc: 'アプリ設定。' } },
   ],

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
-import { useDb } from '@/stores/app'
+import { useDb, useAppStore } from '@/stores/app'
+import { saveCommander } from '@/domain/commanderService'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type Equipment, type Gem, type StatDefinition } from '@/domain'
 import { optimizeSingle, type OptimizationResult } from '@/domain/optimizer'
+const app = useAppStore()
+const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const presets = ref<BuildPreset[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), stats = ref<StatDefinition[]>([])
 const selected = ref(''), result = ref<OptimizationResult | null>(null), message = ref(''), running = ref(false)
 const preset = computed(() => presets.value.find(p => p.id === selected.value))
@@ -16,9 +19,19 @@ onMounted(async () => {
   ])
   selected.value = presets.value[0]?.id ?? ''
 })
+async function saveResult() {
+  if (!result.value || !preset.value) return
+  saving.value = true; message.value = ''; saved.value = ''
+  try {
+    const build = await saveCommander(useDb(), commanderName.value, preset.value.id, result.value)
+    saved.value = '「' + build.name + '」を保存しました。装備・ジェムは使用中として確保されます。'
+    result.value = null
+    await app.refreshCounts()
+  } catch (e) { message.value = String(e) } finally { saving.value = false }
+}
 async function run() {
   if (!preset.value) return
-  running.value = true; message.value = ''; result.value = null
+  running.value = true; message.value = ''; saved.value = ''; result.value = null
   try {
     const db = useDb()
     const [usedEq, usedGem] = await Promise.all([
@@ -32,6 +45,7 @@ async function run() {
       maxEvaluations: 100000
     })
     if (!result.value) message.value = '各部位に未使用の装備が1件以上必要です'
+    else commanderName.value = (preset.value?.name ?? '司令官') + ' ' + new Date().toLocaleDateString('ja-JP')
   } catch (e) { message.value = String(e) } finally { running.value = false }
 }
 </script>
@@ -42,7 +56,13 @@ async function run() {
   <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先にプリセットを登録してください。</v-alert>
   <v-btn color="primary" :disabled="!preset || running" :loading="running" @click="run">最適化を実行</v-btn>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
+  <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み司令官を確認</router-link></v-alert>
   <template v-if="result">
+    <v-card class="pa-3 mt-4">
+      <h3 class="text-subtitle-1 mb-2">結果を保存</h3>
+      <v-text-field v-model="commanderName" label="司令官名" />
+      <v-btn color="primary" :loading="saving" @click="saveResult">この構成を保存して装備を確保</v-btn>
+    </v-card>
     <v-alert :type="result.approximate ? 'warning' : 'success'" class="mt-4">
       {{ result.approximate ? '探索上限に到達：暫定最良解（最適性は保証されません）' : '全候補を探索しました' }}
       ／ 評価 {{ result.evaluated.toLocaleString() }} 件

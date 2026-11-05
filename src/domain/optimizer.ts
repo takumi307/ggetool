@@ -32,7 +32,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     : countEstimate <= 100000 ? 'precise' : 'fast'
   const max = Math.max(1, Math.floor(input.maxEvaluations ?? (mode === 'precise' ? 1000000 : 50000)))
   // Fast mode uses a heuristic shortlist. It never claims exact optimality.
-  const priorities = [...new Set([...input.preset.targets.map(t => t.statId), ...input.preset.priorityStats, ...input.preset.maximizeStats])]
+  const priorities = [...new Set(input.preset.targets.map(t => t.statId))]
   const rank = (effects: { statId: string; value: number }[]) => effects.reduce((sum, e) => {
     const i = priorities.indexOf(e.statId)
     return sum + (i < 0 ? 0 : e.value * Math.pow(2, Math.min(12, priorities.length - i)))
@@ -42,7 +42,8 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   const gems = mode === 'fast'
     ? availableGems.filter(g => g.allowedSlots.length).sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 12)
     : availableGems
-  const order = [...new Set([...input.preset.priorityStats, ...input.preset.maximizeStats])]
+  // Only minimum targets influence ranking; legacy maximization fields are ignored.
+  const order = [...new Set(input.preset.targets.map(t => t.statId))]
   const add = (totals: Record<string, number>, effects: { statId: string; value: number }[]) => {
     for (const effect of effects) totals[effect.statId] = (totals[effect.statId] ?? 0) + effect.value
   }

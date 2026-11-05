@@ -3,6 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander } from '@/domain/commanderService'
+import { optimizeCpSat, cpSatEndpoint, type CpSatBuild } from '@/domain/cpSatClient'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type Gem, type StatDefinition, type SlotType } from '@/domain'
 import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
 const app = useAppStore()
@@ -11,6 +12,12 @@ const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const plans = ref<BuildPlan[]>([])
 const stopRequested = ref(false), progress = ref('')
 const batchResults = ref<{ name: string; preset: string; result: OptimizationResult }[]>([])
+const cpSatPreview = ref<CpSatBuild[]>([])
+const cpSatStatus = ref('')
+const cpSatOptimal = ref(false)
+const timeLimitSeconds = ref(60)
+const controller = ref<AbortController | null>(null)
+const committing = ref(false)
 const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))
 const mode = ref<OptimizerMode>('auto')
 const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
@@ -65,74 +72,93 @@ async function run() {
 }
 async function runPlans() {
   if (running.value) return
-  running.value = true; stopRequested.value = false
-  message.value = ''; saved.value = ''; result.value = null; batchResults.value = []
+  running.value = true; message.value = ''; saved.value = ''; result.value = null
+  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''
+  controller.value = new AbortController()
   try {
     const db = useDb()
     const [commanders, usedEq, usedGem] = await Promise.all([
       db.repo('commanders').getAll(), db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
     ])
-    const reservedEq = new Set(usedEq.map(a => a.equipmentId))
-    const reservedGem = new Set(usedGem.map(a => a.gemId))
-    const jobs = activePlans.value.map(p => ({
-      plan: p, preset: presets.value.find(x => x.id === p.presetId),
-      remaining: Math.max(0, p.count - commanders.filter(c => c.presetId === p.presetId).length)
-    }))
-    const total = jobs.reduce((n, job) => n + job.remaining, 0)
-    if (!total) { message.value = '有効な計画はすべて作成済みです'; return }
-    // Limit a single click to avoid accidentally running thousands of searches.
-    const limit = Math.min(total, 100)
-    let created = 0
-    let stoppedReason = ''
-    outer: for (const job of jobs) {
-      if (!job.preset) { stoppedReason = '計画に対応するプリセットがありません'; break }
-      for (let i = 0; i < job.remaining; i++) {
-        if (stopRequested.value || created >= limit) break outer
-        progress.value = `${job.preset.name}：${i + 1} / ${job.remaining}体目（全体 ${created} / ${total}体）`
-        await new Promise<void>(resolve => setTimeout(resolve, 0))
-        if (stopRequested.value) break outer
-        const candidate = optimizeSingle({
-          equipment: equipment.value, gems: gems.value, stats: stats.value, preset: job.preset,
-          reservedEquipmentIds: [...reservedEq], reservedGemIds: [...reservedGem], mode: mode.value
-        })
-        if (!candidate) { stoppedReason = '未使用の装備が4部位揃わないため停止しました'; break outer }
-        if (candidate.shortfalls.some(s => s.missing > 0)) {
-          stoppedReason = '目標を満たす構成が見つからなかったため停止しました（暫定探索の可能性があります）'
-          break outer
-        }
-        const name = `${job.preset.name} ${commanders.filter(c => c.presetId === job.preset!.id).length + i + 1}`
-        await saveCommander(db, name, job.preset.id, candidate)
-        for (const id of Object.values(candidate.equipmentIds)) if (id) reservedEq.add(id)
-        for (const gem of candidate.gemAssignments) reservedGem.add(gem.gemId)
-        batchResults.value.push({ name, preset: job.preset.name, result: candidate })
-        created++
-      }
-    }
-    await app.refreshCounts()
-    progress.value = ''
-    saved.value = `${created}体を保存しました（計画の残り ${total - created}体）`
-    if (stoppedReason) message.value = stoppedReason
-    else if (stopRequested.value) message.value = '中断しました。作成済みの司令官は保存されています。'
-    else if (created < total) message.value = '1回の実行上限100体に達しました。続きは再度実行してください。'
+    const jobs = activePlans.value.flatMap(plan => {
+      const preset = presets.value.find(p => p.id === plan.presetId)
+      if (!preset) return []
+      const done = commanders.filter(c => c.presetId === preset.id).length
+      return Array.from({ length: Math.min(100, Math.max(0, plan.count - done)) },
+        (_, index) => ({ preset, ordinal: done + index + 1, priority: plan.priority }))
+    }).slice(0, 100)
+    if (!jobs.length) { message.value = '最適化対象がありません'; return }
+    progress.value = `CP-SATで${jobs.length}体の装備配分を計算中（制限時間：${timeLimitSeconds.value}秒/段階）`
+    const response = await optimizeCpSat({
+      jobs, equipment: equipment.value, gems: gems.value, stats: stats.value,
+      reservedEquipmentIds: usedEq.map(a => a.equipmentId),
+      reservedGemIds: usedGem.map(a => a.gemId),
+      timeLimitSeconds: timeLimitSeconds.value,
+      signal: controller.value.signal
+    })
+    cpSatPreview.value = response.builds
+    cpSatStatus.value = response.status
+    cpSatOptimal.value = response.optimal
+    message.value = `${response.achieved} / ${response.requested}体が目標達成。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
   } catch (e) {
-    message.value = '処理を中断しました：' + String(e) + '。保存済みの司令官は保持されます。'
+    message.value = e instanceof Error && e.name === 'AbortError'
+      ? '通信を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
+      : String(e)
+  } finally { running.value = false; progress.value = ''; controller.value = null }
+}
+async function saveCpSat() {
+  if (committing.value || !cpSatPreview.value.length) return
+  committing.value = true; message.value = ''; saved.value = ''
+  let count = 0
+  try {
+    const db = useDb()
+    for (const entry of cpSatPreview.value) {
+      const name = `${entry.job.preset.name} ${entry.job.ordinal}`
+      await saveCommander(db, name, entry.job.preset.id, entry.result)
+      batchResults.value.push({ name, preset: entry.job.preset.name, result: entry.result })
+      count++
+    }
+    saved.value = `${count}体の司令官を保存しました`
+    cpSatPreview.value = []
     await app.refreshCounts()
-  } finally { running.value = false; progress.value = '' }
+  } catch (e) {
+    cpSatPreview.value = []
+    message.value = `${count}体を保存したところで停止しました：${String(e)}。再最適化してください。`
+    await app.refreshCounts()
+  } finally { committing.value = false }
 }
 
 </script>
 <template>
   <h2 class="text-h6 mb-3">司令官の最適化</h2>
   <v-alert type="info" variant="tonal" class="mb-4">4部位の装備と、各部位に最大1個のジェムを組み合わせます。装備・ジェムは重複使用しません。目標達成を優先し、その後に指定した効果を優先順位順で比較します。</v-alert>
-  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効なビルド作成計画があるため、実行すると優先順位順に不足分を自動作成・保存します。目標未達や装備不足で停止し、1回の実行上限は100体です。既存の保存済み司令官は変更しません。</v-alert>
+  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効な計画の不足分（最大100体）をCP-SATで同時に最適化します。計算結果を確認してから保存できます。OPTIMALは最適性証明済み、FEASIBLEは暫定解です。既存の司令官は変更しません。</v-alert>
   <v-select v-model="selected" :disabled="activePlans.length > 0" :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
   <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先にプリセットを登録してください。</v-alert>
-  <v-select v-model="mode" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
+  <v-alert v-if="activePlans.length && !cpSatEndpoint" type="warning" variant="tonal" class="mb-3">CP-SATサーバーが未設定です。VITE_OPTIMIZER_API_URLをCloudflareのビルド環境に設定してください。</v-alert>
+  <v-select v-if="!activePlans.length" v-model="mode" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
+  <v-select v-if="activePlans.length" v-model="timeLimitSeconds" :items="[{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]" label="CP-SAT計算時間（各段階）" class="mb-3" />
   <div class="d-flex align-center ga-2 flex-wrap">
-    <v-btn color="primary" :disabled="(!preset && !activePlans.length) || running" :loading="running" @click="run">{{ activePlans.length ? "計画の不足分を最適化して保存" : "最適化を実行" }}</v-btn>
-    <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="stopRequested = true">次の司令官から中断</v-btn>
+    <v-btn color="primary" :disabled="(!preset && !activePlans.length) || (activePlans.length > 0 && !cpSatEndpoint) || running" :loading="running" @click="run">{{ activePlans.length ? "CP-SATで全体最適化" : "最適化を実行" }}</v-btn>
+    <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="controller?.abort()">通信を中断</v-btn>
   </div>
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
+  <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">
+    <h3 class="text-subtitle-1 mb-2">CP-SAT最適化結果（{{ cpSatPreview.length }}体）</h3>
+    <v-chip :color="cpSatOptimal ? 'success' : 'warning'" class="mb-3">{{ cpSatOptimal ? 'OPTIMAL：最適性証明済み' : cpSatStatus + '：暫定解' }}</v-chip>
+    <div><v-btn color="primary" :loading="committing" :disabled="running" @click="saveCpSat">この{{ cpSatPreview.length }}体を保存</v-btn></div>
+    <v-expansion-panels variant="accordion" class="mt-3">
+      <v-expansion-panel v-for="(entry, index) in cpSatPreview" :key="index" :title="entry.job.preset.name + ' ' + entry.job.ordinal">
+        <v-expansion-panel-text>
+          <div v-for="slot in SLOT_TYPES" :key="slot" class="mb-2">
+            <strong>{{ SLOT_LABELS[slot] }}：{{ eqName(entry.result.equipmentIds[slot]) }}</strong>
+            <div v-for="(effect, i) in itemEffects(slot, entry.result)" :key="i" class="text-body-2">{{ effectText(effect.statId, effect.value) }}</div>
+            <div>ジェム：{{ gemName(entry.result.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</div>
+          </div>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
+  </v-card>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
   <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み司令官を確認</router-link></v-alert>
   <v-card v-if="batchResults.length" class="pa-3 mt-4">

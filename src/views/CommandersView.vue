@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
 import { type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
 import { deleteCommander } from '@/domain/commanderService'
@@ -7,6 +7,13 @@ import CommanderEquipmentPanel from '@/components/CommanderEquipmentPanel.vue'
 const app = useAppStore()
 const builds = ref<CommanderBuild[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([])
 const error = ref('')
+const search = ref('')
+const presetFilter = ref('all')
+const filteredBuilds = computed(() => builds.value.filter(b =>
+  (presetFilter.value === 'all' || b.presetId === presetFilter.value) &&
+  (b.name + ' ' + presetName(b.presetId)).toLocaleLowerCase().includes(search.value.toLocaleLowerCase().trim())
+))
+const presetOptions = computed(() => [{ title: 'すべてのプリセット', value: 'all' }, ...presets.value.map(p => ({ title: p.name, value: p.id }))])
 const expandedId = ref('')
 async function reload() {
   const db = useDb()
@@ -30,7 +37,13 @@ async function remove(b: CommanderBuild) {
   <h2 class="text-h6 mb-3">保存済み司令官</h2>
   <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
   <v-alert v-if="!builds.length" type="info" variant="tonal">まだ保存された司令官はありません。最適化画面から保存してください。</v-alert>
-  <v-card v-for="b in builds" :key="b.id" class="pa-3 mb-3">
+  <v-row v-if="builds.length" dense class="mb-3">
+    <v-col cols="12" sm="7"><v-text-field v-model="search" label="司令官を検索" prepend-inner-icon="mdi-magnify" clearable density="comfortable" hide-details /></v-col>
+    <v-col cols="12" sm="5"><v-select v-model="presetFilter" :items="presetOptions" label="ビルド種別" density="comfortable" hide-details /></v-col>
+  </v-row>
+  <p v-if="builds.length" class="text-caption mb-2">{{ filteredBuilds.length }} / {{ builds.length }} 体を表示</p>
+  <v-alert v-if="builds.length && !filteredBuilds.length" type="info" variant="tonal" class="mb-3">条件に一致する司令官がありません。</v-alert>
+  <v-card v-for="b in filteredBuilds" :key="b.id" class="pa-3 mb-3">
     <div class="d-flex align-center ga-2 flex-wrap">
       <strong>{{ b.name }}</strong>
       <v-chip size="small">{{ presetName(b.presetId) }}</v-chip>

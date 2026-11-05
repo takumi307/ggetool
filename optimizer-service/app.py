@@ -1,0 +1,173 @@
+"""Exact multi-commander assignment model using OR-Tools CP-SAT.
+
+Run with: uvicorn app:app --host 0.0.0.0 --port 8080
+No user data is persisted. Deploy behind authentication and rate limits.
+"""
+import math
+import os
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Literal
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, model_validator
+from ortools.sat.python import cp_model
+
+SLOTS = ("helmet", "weapon", "armor", "artifact")
+SCALE = 1000
+def scaled(value: float) -> int:
+    if not math.isfinite(value) or abs(value) > 100000:
+        raise ValueError("Invalid numeric value")
+    d = Decimal(str(value)) * SCALE
+    if d != d.to_integral_value():
+        raise ValueError("Values must have at most three decimal places")
+    return int(d)
+
+class Effect(BaseModel):
+    statId: str
+    value: float = Field(ge=0, le=100000)
+class Equipment(BaseModel):
+    id: str
+    slotType: Literal["helmet", "weapon", "armor", "artifact"]
+    effects: list[Effect]
+class Gem(BaseModel):
+    id: str
+    allowedSlots: list[Literal["helmet", "weapon", "armor", "artifact"]]
+    effects: list[Effect]
+class Stat(BaseModel):
+    id: str
+    capStatus: str
+    cap: float | None = None
+class Target(BaseModel):
+    statId: str
+    minValue: float = Field(ge=0, le=100000)
+class Job(BaseModel):
+    presetId: str
+    ordinal: int = Field(ge=1)
+    priority: int = Field(ge=1)
+    targets: list[Target]
+class Request(BaseModel):
+    equipment: list[Equipment] = Field(max_length=1500)
+    gems: list[Gem] = Field(max_length=1500)
+    stats: list[Stat] = Field(max_length=300)
+    jobs: list[Job] = Field(max_length=100)
+    reservedEquipmentIds: list[str] = Field(default_factory=list)
+    reservedGemIds: list[str] = Field(default_factory=list)
+    timeLimitSeconds: int = Field(default=60, ge=5, le=300)
+    @model_validator(mode="after")
+    def check_ids(self):
+        if len({e.id for e in self.equipment}) != len(self.equipment):
+            raise ValueError("Duplicate equipment IDs")
+        if len({g.id for g in self.gems}) != len(self.gems):
+            raise ValueError("Duplicate gem IDs")
+        if len({s.id for s in self.stats}) != len(self.stats):
+            raise ValueError("Duplicate stat IDs")
+        return self
+
+app = FastAPI(title="E4K CP-SAT Optimizer", version="1.0")
+origins = [s.strip() for s in os.getenv("CORS_ORIGINS", "").split(",") if s.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["POST", "GET"], allow_headers=["Content-Type"])
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+@app.post("/optimize")
+def optimize(data: Request):
+    if not data.jobs:
+        return {"status": "OPTIMAL", "optimal": True, "achieved": 0, "requested": 0, "builds": []}
+    reserved_e = set(data.reservedEquipmentIds)
+    reserved_g = set(data.reservedGemIds)
+    eq = [e for e in data.equipment if e.id not in reserved_e]
+    gems = [g for g in data.gems if g.id not in reserved_g]
+    caps = {s.id: scaled(s.cap) for s in data.stats if s.capStatus == "known" and s.cap is not None}
+    model = cp_model.CpModel()
+    n = len(data.jobs)
+    active = [model.NewBoolVar(f"active_{j}") for j in range(n)]
+    x = {}
+    y = {}
+    for j in range(n):
+        for slot in SLOTS:
+            for e in eq:
+                if e.slotType == slot:
+                    x[j, slot, e.id] = model.NewBoolVar(f"e_{j}_{slot}_{e.id}")
+            model.Add(sum(v for (jj, ss, _), v in x.items() if jj == j and ss == slot) == active[j])
+            for g in gems:
+                if slot in g.allowedSlots:
+                    y[j, slot, g.id] = model.NewBoolVar(f"g_{j}_{slot}_{g.id}")
+            model.Add(sum(v for (jj, ss, _), v in y.items() if jj == j and ss == slot) <= active[j])
+    for e in eq:
+        model.Add(sum(x[j, e.slotType, e.id] for j in range(n)) <= 1)
+    for g in gems:
+        model.Add(sum(v for (j, slot, gid), v in y.items() if gid == g.id) <= 1)
+    # Each minimum target is a linear sum of equipment and gem contributions.
+    # Cap semantics: min(raw, cap) >= target iff raw >= target and cap >= target.
+    for j, job in enumerate(data.jobs):
+        for target in job.targets:
+            minimum = scaled(target.minValue)
+            if target.statId in caps and caps[target.statId] < minimum:
+                model.Add(active[j] == 0)
+                continue
+            terms = []
+            for e in eq:
+                value = sum(scaled(effect.value) for effect in e.effects if effect.statId == target.statId)
+                if value:
+                    terms.append(value * x[j, e.slotType, e.id])
+            for g in gems:
+                value = sum(scaled(effect.value) for effect in g.effects if effect.statId == target.statId)
+                if value:
+                    terms.extend(value * y[j, slot, g.id] for slot in SLOTS if (j, slot, g.id) in y)
+            model.Add(sum(terms) >= minimum * active[j])
+    # Lexicographic objective: number of successful builds first, priority second.
+    count = sum(active)
+    model.Maximize(count)
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = data.timeLimitSeconds
+    solver.parameters.num_search_workers = 8
+    status = solver.Solve(model)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return {"status": solver.StatusName(status), "optimal": False, "achieved": 0, "requested": n, "builds": []}
+    first_count = round(solver.Value(count))
+    best_solver = solver
+    final_status = status
+    # Only perform priority tie-break if the maximum count is proven.
+    if status == cp_model.OPTIMAL:
+        model.Add(count == first_count)
+        max_priority = max(job.priority for job in data.jobs)
+        weights = [max_priority + 1 - job.priority for job in data.jobs]
+        model.Maximize(sum(weights[j] * active[j] for j in range(n)))
+        second = cp_model.CpSolver()
+        second.parameters.max_time_in_seconds = data.timeLimitSeconds
+        second.parameters.num_search_workers = 8
+        second_status = second.Solve(model)
+        if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            best_solver = second
+            final_status = second_status
+    builds = []
+    for j, job in enumerate(data.jobs):
+        if not best_solver.Value(active[j]):
+            continue
+        chosen = {slot: next(e.id for e in eq if e.slotType == slot and best_solver.Value(x[j, slot, e.id])) for slot in SLOTS}
+        assignments = [{"slotType": slot, "gemId": g.id} for slot in SLOTS for g in gems
+                       if (j, slot, g.id) in y and best_solver.Value(y[j, slot, g.id])]
+        totals = {}
+        for e in eq:
+            if e.id in chosen.values():
+                for effect in e.effects:
+                    totals[effect.statId] = totals.get(effect.statId, 0) + scaled(effect.value)
+        gem_ids = {a["gemId"] for a in assignments}
+        for g in gems:
+            if g.id in gem_ids:
+                for effect in g.effects:
+                    totals[effect.statId] = totals.get(effect.statId, 0) + scaled(effect.value)
+        builds.append({
+            "presetId": job.presetId, "ordinal": job.ordinal, "equipmentIds": chosen,
+            "gemAssignments": assignments,
+            "totals": {key: val / SCALE for key, val in totals.items()},
+            "shortfalls": [{"statId": t.statId, "required": t.minValue,
+                            "actual": min(totals.get(t.statId, 0), caps.get(t.statId, 10**18)) / SCALE,
+                            "missing": 0} for t in job.targets],
+            "overflow": [{"statId": key, "cap": cap / SCALE, "raw": totals[key] / SCALE}
+                         for key, cap in caps.items() if totals.get(key, 0) > cap]
+        })
+    return {"status": best_solver.StatusName(final_status),
+            "optimal": status == cp_model.OPTIMAL and final_status == cp_model.OPTIMAL,
+            "achieved": len(builds), "requested": n, "builds": builds}

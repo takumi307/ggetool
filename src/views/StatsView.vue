@@ -24,7 +24,7 @@ async function save() {
   if (!editing.value) return
   const source = editing.value
   const value = source.capStatus === 'known'
-    ? (source.cap === null || source.cap === '' as unknown ? Number.NaN : Number(source.cap))
+    ? (source.cap === null || String(source.cap).trim() === '' ? Number.NaN : Number(source.cap))
     : null
   const stat: StatDefinition = { ...source, cap: value }
   const issue = validateStat(stat)

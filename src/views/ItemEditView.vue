@@ -45,7 +45,7 @@ async function save() {
   const now = new Date().toISOString()
   const id = editId.value || crypto.randomUUID()
   // Equipment names are optional; use a stable generated label for unnamed entries.
-  const resolvedName = name.value.trim() || (props.kind === 'equipment' ? `${SLOT_LABELS[slotType.value]}-${id.slice(0, 8)}` : `ジェム-${'${id.slice(0, 8)}'}`)
+  const resolvedName = name.value.trim() || (props.kind === 'equipment' ? `${SLOT_LABELS[slotType.value]}-${id.slice(0, 8)}` : `ジェム-${id.slice(0, 8)}`)
   const base = {
     id, name: resolvedName, memo: memo.value,
     effects: effects.value.map(e => ({ statId: e.statId, value: Number(e.value) })),

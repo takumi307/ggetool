@@ -17,6 +17,8 @@ const cpSatStatus = ref('')
 const cpSatOptimal = ref(false)
 const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
+const executionMode = ref<'render' | 'local'>('render')
+const localEndpoint = 'http://127.0.0.1:8080'
 const controller = ref<AbortController | null>(null)
 const committing = ref(false)
 const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))
@@ -89,6 +91,14 @@ async function runPlans() {
         (_, index) => ({ preset, ordinal: done + index + 1, priority: plan.priority }))
     }).slice(0, 100)
     if (!jobs.length) { message.value = '最適化対象がありません'; return }
+    if (executionMode.value === 'local') {
+      try {
+        const check = await fetch(localEndpoint + '/health', { signal: controller.value.signal })
+        if (!check.ok) throw new Error('HTTP ' + check.status)
+      } catch {
+        throw new Error('PC内の最適化サーバーに接続できません。ローカルサーバーを起動し、CORS_ORIGINSにこのサイトのURLを設定してください。')
+      }
+    }
     progress.value = `CP-SATで${jobs.length}体の装備配分を計算中（最大${timeLimitSeconds.value}秒/段階）。通信は短時間の状況確認に切り替えます`
     const response = await optimizeCpSat({
       jobs, equipment: equipment.value, gems: gems.value, stats: stats.value,
@@ -96,6 +106,7 @@ async function runPlans() {
       reservedGemIds: usedGem.map(a => a.gemId),
       timeLimitSeconds: timeLimitSeconds.value,
       signal: controller.value.signal,
+      endpoint: executionMode.value === 'local' ? localEndpoint : cpSatEndpoint,
       onProgress: (text: string) => { progress.value = text }
     })
     cpSatPreview.value = response.builds
@@ -138,11 +149,13 @@ async function saveCpSat() {
   <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効な計画の不足分（最大100体）をCP-SATで同時に最適化します。計算結果を確認してから保存できます。OPTIMALは最適性証明済み、FEASIBLEは暫定解です。既存の司令官は変更しません。</v-alert>
   <v-select v-model="selected" :disabled="activePlans.length > 0" :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
   <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先にプリセットを登録してください。</v-alert>
-  <v-alert v-if="activePlans.length && !cpSatEndpoint" type="warning" variant="tonal" class="mb-3">CP-SATサーバーが未設定です。VITE_OPTIMIZER_API_URLをCloudflareのビルド環境に設定してください。</v-alert>
+  <v-alert v-if="activePlans.length && executionMode === 'render' && !cpSatEndpoint" type="warning" variant="tonal" class="mb-3">CP-SATサーバーが未設定です。VITE_OPTIMIZER_API_URLをCloudflareのビルド環境に設定してください。</v-alert>
   <v-select v-if="!activePlans.length" v-model="mode" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
-  <v-select v-if="activePlans.length" v-model="timeLimitSeconds" :items="[{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]" label="CP-SAT計算時間（各段階）" class="mb-3" />
+  <v-select v-if="activePlans.length" v-model="executionMode" :items="[{ title: 'Render（クラウド）', value: 'render' }, { title: 'このPC（ローカルCP-SAT）', value: 'local' }]" label="最適化の実行先" class="mb-3" />
+  <v-alert v-if="activePlans.length && executionMode === 'local'" type="info" variant="tonal" class="mb-3">PCにPython版の最適化サーバーを起動してください（127.0.0.1:8080）。計算はこのPCで実行し、装備データはRenderに送信しません。セットアップ手順は optimizer-service/LOCAL_WINDOWS.md を参照してください。</v-alert>
+  <v-select v-if="activePlans.length" v-model="timeLimitSeconds" :items="executionMode === 'local' ? [{ title: '1分', value: 60 }, { title: '5分', value: 300 }, { title: '10分', value: 600 }, { title: '30分', value: 1800 }] : [{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]" label="CP-SAT計算時間（各段階）" class="mb-3" />
   <div class="d-flex align-center ga-2 flex-wrap">
-    <v-btn color="primary" :disabled="(!preset && !activePlans.length) || (activePlans.length > 0 && !cpSatEndpoint) || running" :loading="running" @click="run">{{ activePlans.length ? "CP-SATで全体最適化" : "最適化を実行" }}</v-btn>
+    <v-btn color="primary" :disabled="(!preset && !activePlans.length) || (activePlans.length > 0 && executionMode === 'render' && !cpSatEndpoint) || running" :loading="running" @click="run">{{ activePlans.length ? "CP-SATで全体最適化" : "最適化を実行" }}</v-btn>
     <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
   </div>
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>

@@ -5,9 +5,9 @@ import type { BuildPreset, StatDefinition } from '@/domain'
 const app = useAppStore()
 const presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([]), editing = ref<BuildPreset | null>(null), error = ref('')
 const defaults = [
-  { name: 'バランス型', targets: [['S002', 120], ['S001', 120], ['S003', 50]], defaultCount: 30 },
-  { name: '略奪特化型', targets: [['S008', 50], ['S002', 120]], defaultCount: 3 },
-  { name: '援軍特化型', targets: [['S002', 120], ['S003', 50]], defaultCount: 1 }
+  { name: 'バランス型', targets: [], defaultCount: 30, description: '乱闘・遠隔の合計150%、ジェムのNPC補正は最大30%まで加算。中庭はNPC補正込みで80%を目指す。' },
+  { name: '略奪特化型', targets: [['S008', 50]], defaultCount: 3, description: '略奪量50%のみを最低条件とする' },
+  { name: '援軍特化型', targets: [['S002', 120], ['S003', 50], ['S007', 90]], defaultCount: 1, description: '遠隔兵120%、中庭50%、移動速度90%' }
 ] as const
 async function reload() { presets.value = await useDb().repo('presets').getAll(); stats.value = await useDb().repo('stats').getAll() }
 onMounted(reload)
@@ -21,7 +21,7 @@ async function seed() {
     if (presets.value.some(p => p.name === d.name)) continue
     await useDb().repo('presets').put({
       ...fresh(), name: d.name, targets: d.targets.map(([statId, minValue]) => ({ statId, minValue })),
-      defaultCount: d.defaultCount
+      defaultCount: d.defaultCount, description: d.description
     })
   }
   await reload(); await app.refreshCounts()

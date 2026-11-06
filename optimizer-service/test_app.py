@@ -112,3 +112,24 @@ def test_equipment_cap_without_gem_still_limits_target():
                   "targets": [{"statId": "power", "minValue": 150}]}]
     result = client.post("/optimize", json=p).json()
     assert result["achieved"] == 0
+
+
+def test_required_equipment_per_commander():
+    p = payload()
+    p["jobs"][0]["requireEquipment"] = True
+    p["jobs"][0]["requiredEquipmentIds"] = ["h1"]
+    p["jobs"][1]["requireEquipment"] = True
+    p["jobs"][1]["requiredEquipmentIds"] = ["h1"]
+    result = client.post("/optimize", json=p).json()
+    assert result["achieved"] == 1
+    assert "h1" in result["builds"][0]["equipmentIds"].values()
+
+
+def test_required_equipment_missing_means_no_build():
+    p = payload()
+    p["jobs"][0]["requireEquipment"] = True
+    p["jobs"][0]["requiredEquipmentIds"] = []
+    p["jobs"][1]["requireEquipment"] = True
+    p["jobs"][1]["requiredEquipmentIds"] = []
+    result = client.post("/optimize", json=p).json()
+    assert result["achieved"] == 0

@@ -88,3 +88,33 @@ def test_impossible_cap_upper_bound_zero():
     p["stats"][0]["cap"] = 5
     result = client.post("/optimize", json=p).json()
     assert result["upperBound"] == result["achieved"] == 0
+
+def test_cancel_job_stops_server_work(monkeypatch):
+    import threading
+    import time
+    import app as service
+    started = threading.Event()
+    finished = threading.Event()
+
+    def fake_optimize(data, cancel_event=None, register_solver=None):
+        started.set()
+        cancel_event.wait(timeout=5)
+        finished.set()
+        return {"status": "CANCELLED", "builds": []}
+
+    monkeypatch.setattr(service, "optimize", fake_optimize)
+    response = client.post("/jobs", json=payload())
+    assert response.status_code == 202
+    job_id = response.json()["jobId"]
+    assert started.wait(2)
+    cancelled = client.delete(f"/jobs/{job_id}")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["state"] == "cancelling"
+    assert finished.wait(2)
+    for _ in range(50):
+        state = client.get(f"/jobs/{job_id}").json()["state"]
+        if state == "cancelled":
+            break
+        time.sleep(0.02)
+    assert state == "cancelled"
+    assert client.post("/jobs", json=payload()).status_code == 202

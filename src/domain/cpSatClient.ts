@@ -67,6 +67,7 @@ export async function optimizeCpSat(input: {
   if (!/^[a-f0-9]{32}$/.test(started.jobId)) throw new Error('不正なジョブIDです')
   const deadline = Date.now() + input.timeLimitSeconds * 2000 + 120000
   let data: ServerResponse | undefined
+  try {
   while (Date.now() < deadline) {
     await new Promise<void>((resolve, reject) => {
       if (input.signal?.aborted) { reject(new DOMException('中断しました', 'AbortError')); return }
@@ -81,6 +82,30 @@ export async function optimizeCpSat(input: {
     if (state.state === 'failed') throw new Error('CP-SAT計算エラー: ' + (state.error ?? '不明'))
     if (state.state === 'completed') { data = state.result; break }
     input.onProgress?.('CP-SAT計算中… 経過 ' + Math.round((input.timeLimitSeconds * 2000 + 120000 - (deadline - Date.now())) / 1000) + '秒')
+  }
+  } catch (error) {
+    if (input.signal?.aborted) {
+      // The cancellation request must NOT use the already-aborted signal.
+      // Wait for the server to acknowledge termination before allowing retry.
+      try {
+        const cancelled = await fetch(cpSatEndpoint + '/jobs/' + started.jobId, { method: 'DELETE' })
+        if (!cancelled.ok) throw new Error('HTTP ' + cancelled.status)
+        for (let i = 0; i < 20; i++) {
+          const check = await fetch(cpSatEndpoint + '/jobs/' + started.jobId)
+          if (!check.ok) break
+          const state = await check.json() as { state: string }
+          if (state.state === 'cancelled' || state.state === 'completed' || state.state === 'failed') {
+            throw new DOMException('サーバーの計算を停止しました', 'AbortError')
+          }
+          await new Promise(resolve => setTimeout(resolve, 500))
+        }
+        throw new Error('停止要求を送信しましたが、終了確認ができません。少し待ってから再実行してください。')
+      } catch (cancelError) {
+        if (cancelError instanceof DOMException && cancelError.name === 'AbortError') throw cancelError
+        throw new Error('サーバーの計算停止を確認できませんでした。Renderの状態を確認してください。')
+      }
+    }
+    throw error
   }
   if (!data) throw new Error('計算待ちが制限時間を超えました。Renderのログを確認してください。')
   if (!Array.isArray(data.builds)) throw new Error('CP-SAT APIから不正な応答が返されました')

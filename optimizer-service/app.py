@@ -69,15 +69,17 @@ class Request(BaseModel):
 
 app = FastAPI(title="E4K CP-SAT Optimizer", version="1.0")
 origins = [s.strip() for s in os.getenv("CORS_ORIGINS", "").split(",") if s.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["POST", "GET"], allow_headers=["Content-Type"])
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["POST", "GET", "DELETE"], allow_headers=["Content-Type"])
 @app.get("/health")
 def health():
     return {"ok": True}
 
 @app.post("/optimize")
-def optimize(data: Request):
+def optimize(data: Request, cancel_event=None, register_solver=None):
     if not data.jobs:
         return {"status": "OPTIMAL", "optimal": True, "achieved": 0, "upperBound": 0, "requested": 0, "builds": []}
+    if cancel_event is not None and cancel_event.is_set():
+        return {"status": "CANCELLED", "optimal": False, "achieved": 0, "upperBound": None, "requested": len(data.jobs), "builds": []}
     reserved_e = set(data.reservedEquipmentIds)
     reserved_g = set(data.reservedGemIds)
     eq = [e for e in data.equipment if e.id not in reserved_e]
@@ -159,6 +161,10 @@ def optimize(data: Request):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = data.timeLimitSeconds
     solver.parameters.num_search_workers = 2
+    if register_solver:
+        register_solver(solver)
+    if cancel_event is not None and cancel_event.is_set():
+        return {"status": "CANCELLED", "optimal": False, "achieved": 0, "upperBound": None, "requested": n, "builds": []}
     status = solver.Solve(model)
     # Integer objective: CP-SAT best bound is a certified upper bound on the
     # maximum achievable count (not an estimate of the next feasible solution).
@@ -170,7 +176,7 @@ def optimize(data: Request):
     best_solver = solver
     final_status = status
     # Only perform priority tie-break if the maximum count is proven.
-    if status == cp_model.OPTIMAL:
+    if status == cp_model.OPTIMAL and not (cancel_event is not None and cancel_event.is_set()):
         model.Add(count == first_count)
         max_priority = max(job.priority for job in data.jobs)
         weights = [max_priority + 1 - job.priority for job in data.jobs]
@@ -178,10 +184,14 @@ def optimize(data: Request):
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds
         second.parameters.num_search_workers = 2
-        second_status = second.Solve(model)
+        if register_solver:
+            register_solver(second)
+        second_status = cp_model.UNKNOWN if cancel_event is not None and cancel_event.is_set() else second.Solve(model)
         if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             best_solver = second
             final_status = second_status
+    if cancel_event is not None and cancel_event.is_set():
+        return {"status": "CANCELLED", "optimal": False, "achieved": 0, "upperBound": None, "requested": n, "builds": []}
     builds = []
     for j, job in enumerate(data.jobs):
         if not best_solver.Value(active[j]):
@@ -230,26 +240,38 @@ def _expire_jobs():
             del _jobs[key]
 
 def _run_job(job_id: str, data: Request):
-    try:
-        result = optimize(data)
+    def register_solver(solver):
         with _job_lock:
-            _jobs[job_id].update(state="completed", result=result, updated=time.monotonic())
+            job = _jobs[job_id]
+            job["solver"] = solver
+            if job["cancel"].is_set():
+                solver.StopSearch()
+    try:
+        cancel = _jobs[job_id]["cancel"]
+        result = optimize(data, cancel_event=cancel, register_solver=register_solver)
+        with _job_lock:
+            job = _jobs[job_id]
+            job.update(state="cancelled" if cancel.is_set() else "completed",
+                       result=None if cancel.is_set() else result,
+                       solver=None, updated=time.monotonic())
     except Exception as exc:
         with _job_lock:
-            _jobs[job_id].update(state="failed", error=str(exc), updated=time.monotonic())
+            job = _jobs[job_id]
+            job.update(state="cancelled" if job["cancel"].is_set() else "failed",
+                       error=str(exc), solver=None, updated=time.monotonic())
 
 @app.post("/jobs", status_code=202)
 def start_job(data: Request):
     with _job_lock:
         _expire_jobs()
         # Free-tier instance: prevent unbounded CPU and memory queues.
-        if any(job["state"] == "running" for job in _jobs.values()):
+        if any(job["state"] in ("running", "cancelling") for job in _jobs.values()):
             raise HTTPException(status_code=429, detail="別の最適化を実行中です。完了後に再試行してください。")
         if len(_jobs) >= _MAX_JOBS:
             oldest = min(_jobs, key=lambda key: _jobs[key]["updated"])
             del _jobs[oldest]
         job_id = uuid.uuid4().hex
-        _jobs[job_id] = {"state": "running", "updated": time.monotonic()}
+        _jobs[job_id] = {"state": "running", "cancel": threading.Event(), "solver": None, "updated": time.monotonic()}
     _executor.submit(_run_job, job_id, data)
     return {"jobId": job_id, "state": "running"}
 
@@ -261,8 +283,23 @@ def job_status(job_id: str):
         if not job:
             raise HTTPException(status_code=404, detail="計算ジョブが見つかりません。サーバー再起動の可能性があります。")
         response = {"jobId": job_id, "state": job["state"]}
-        if "result" in job:
+        if job.get("result") is not None:
             response["result"] = job["result"]
         if "error" in job:
             response["error"] = job["error"]
         return response
+
+@app.delete("/jobs/{job_id}")
+def cancel_job(job_id: str):
+    with _job_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+        if job["state"] in ("completed", "failed", "cancelled"):
+            return {"jobId": job_id, "state": job["state"]}
+        job["cancel"].set()
+        job["state"] = "cancelling"
+        solver = job.get("solver")
+    if solver is not None:
+        solver.StopSearch()
+    return {"jobId": job_id, "state": "cancelling"}

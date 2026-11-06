@@ -66,6 +66,8 @@ export interface BuildTarget {
 }
 
 export interface BuildPreset {
+  /** 各司令官に必ず1個以上使う装備の名前部分一致条件。空なら制約なし */
+  requiredEquipmentKeyword?: string
   id: string
   name: string
   targets: BuildTarget[]

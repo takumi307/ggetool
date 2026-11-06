@@ -52,6 +52,8 @@ class Job(BaseModel):
     ordinal: int = Field(ge=1)
     priority: int = Field(ge=1)
     targets: list[Target]
+    previousEquipmentIds: dict[str, str] = Field(default_factory=dict)
+    previousGemIds: list[str] = Field(default_factory=list)
 class Request(BaseModel):
     equipment: list[Equipment] = Field(max_length=1500)
     gems: list[Gem] = Field(max_length=1500)
@@ -189,7 +191,21 @@ def optimize(data: Request):
         model.Add(count == first_count)
         max_priority = max(job.priority for job in data.jobs)
         weights = [max_priority + 1 - job.priority for job in data.jobs]
-        model.Maximize(sum(weights[j] * active[j] for j in range(n)))
+        # Preserve priority as the dominant tie-break, then retain existing
+        # equipment/gems when equally many builds meet their targets.
+        # Each active job can retain at most 4 equipment and 4 gems.
+        retained = []
+        for j, job in enumerate(data.jobs):
+            for slot, eid in job.previousEquipmentIds.items():
+                var = x.get((j, slot, eid))
+                if var is not None:
+                    retained.append(var)
+            for gid in job.previousGemIds:
+                for slot in SLOTS:
+                    var = y.get((j, slot, gid))
+                    if var is not None:
+                        retained.append(var)
+        model.Maximize((8 * n + 1) * sum(weights[j] * active[j] for j in range(n)) + sum(retained))
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds
         second.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))

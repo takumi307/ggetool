@@ -83,49 +83,83 @@ def optimize(data: Request):
     eq = [e for e in data.equipment if e.id not in reserved_e]
     gems = [g for g in data.gems if g.id not in reserved_g]
     caps = {s.id: scaled(s.cap) for s in data.stats if s.capStatus == "known" and s.cap is not None}
+    # Pre-index candidates and their relevant effects once. This avoids
+    # repeatedly scanning every candidate for each job/slot/target.
+    equipment_by_slot = {slot: [] for slot in SLOTS}
+    for e in eq:
+        equipment_by_slot[e.slotType].append(e)
+    gems_by_slot = {slot: [] for slot in SLOTS}
+    for g in gems:
+        for slot in g.allowedSlots:
+            gems_by_slot[slot].append(g)
+    relevant_stats = {t.statId for job in data.jobs for t in job.targets}
+    def effect_totals(item):
+        result = {}
+        for effect in item.effects:
+            if effect.statId in relevant_stats:
+                result[effect.statId] = result.get(effect.statId, 0) + scaled(effect.value)
+        return result
+    equipment_effects = {e.id: effect_totals(e) for e in eq}
+    gem_effects = {g.id: effect_totals(g) for g in gems}
     model = cp_model.CpModel()
     n = len(data.jobs)
     active = [model.NewBoolVar(f"active_{j}") for j in range(n)]
     x = {}
     y = {}
+    equipment_uses = {e.id: [] for e in eq}
+    gem_uses = {g.id: [] for g in gems}
+    equipment_stat_terms = {stat: [] for stat in relevant_stats}
+    gem_stat_terms = {stat: [] for stat in relevant_stats}
     for j in range(n):
         for slot in SLOTS:
-            for e in eq:
-                if e.slotType == slot:
-                    x[j, slot, e.id] = model.NewBoolVar(f"e_{j}_{slot}_{e.id}")
-            model.Add(sum(v for (jj, ss, _), v in x.items() if jj == j and ss == slot) == active[j])
-            for g in gems:
-                if slot in g.allowedSlots:
-                    y[j, slot, g.id] = model.NewBoolVar(f"g_{j}_{slot}_{g.id}")
-            model.Add(sum(v for (jj, ss, _), v in y.items() if jj == j and ss == slot) <= active[j])
-    for e in eq:
-        model.Add(sum(x[j, e.slotType, e.id] for j in range(n)) <= 1)
-    for g in gems:
-        model.Add(sum(v for (j, slot, gid), v in y.items() if gid == g.id) <= 1)
+            slot_equipment = []
+            for e in equipment_by_slot[slot]:
+                var = model.NewBoolVar(f"e_{j}_{slot}_{e.id}")
+                x[j, slot, e.id] = var
+                slot_equipment.append(var)
+                equipment_uses[e.id].append(var)
+                for stat, value in equipment_effects[e.id].items():
+                    equipment_stat_terms[stat].append((j, value, var))
+            model.Add(sum(slot_equipment) == active[j])
+            slot_gems = []
+            for g in gems_by_slot[slot]:
+                var = model.NewBoolVar(f"g_{j}_{slot}_{g.id}")
+                y[j, slot, g.id] = var
+                slot_gems.append(var)
+                gem_uses[g.id].append(var)
+                for stat, value in gem_effects[g.id].items():
+                    gem_stat_terms[stat].append((j, value, var))
+            model.Add(sum(slot_gems) <= active[j])
+    for uses in equipment_uses.values():
+        model.Add(sum(uses) <= 1)
+    for uses in gem_uses.values():
+        model.Add(sum(uses) <= 1)
+    # Identical jobs are interchangeable. Enforce an active-prefix order
+    # within each identical target/priority group, preserving optimal count
+    # and priority objective without restricting distinct jobs.
+    previous_identical = {}
+    for j, job in enumerate(data.jobs):
+        signature = (job.presetId, job.priority,
+                     tuple(sorted((t.statId, scaled(t.minValue)) for t in job.targets)))
+        if signature in previous_identical:
+            model.Add(active[j] <= active[previous_identical[signature]])
+        previous_identical[signature] = j
     # Each minimum target is a linear sum of equipment and gem contributions.
-    # Cap semantics: min(raw, cap) >= target iff raw >= target and cap >= target.
     for j, job in enumerate(data.jobs):
         for target in job.targets:
             minimum = scaled(target.minValue)
             if target.statId in caps and caps[target.statId] < minimum:
                 model.Add(active[j] == 0)
                 continue
-            terms = []
-            for e in eq:
-                value = sum(scaled(effect.value) for effect in e.effects if effect.statId == target.statId)
-                if value:
-                    terms.append(value * x[j, e.slotType, e.id])
-            for g in gems:
-                value = sum(scaled(effect.value) for effect in g.effects if effect.statId == target.statId)
-                if value:
-                    terms.extend(value * y[j, slot, g.id] for slot in SLOTS if (j, slot, g.id) in y)
+            terms = [value * var for jj, value, var in equipment_stat_terms[target.statId] if jj == j]
+            terms.extend(value * var for jj, value, var in gem_stat_terms[target.statId] if jj == j)
             model.Add(sum(terms) >= minimum * active[j])
     # Lexicographic objective: number of successful builds first, priority second.
     count = sum(active)
     model.Maximize(count)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = data.timeLimitSeconds
-    solver.parameters.num_search_workers = 8
+    solver.parameters.num_search_workers = 2
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {"status": solver.StatusName(status), "optimal": False, "achieved": 0, "requested": n, "builds": []}
@@ -140,7 +174,7 @@ def optimize(data: Request):
         model.Maximize(sum(weights[j] * active[j] for j in range(n)))
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds
-        second.parameters.num_search_workers = 8
+        second.parameters.num_search_workers = 2
         second_status = second.Solve(model)
         if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             best_solver = second

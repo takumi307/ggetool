@@ -133,3 +133,19 @@ def test_required_equipment_missing_means_no_build():
     p["jobs"][1]["requiredEquipmentIds"] = []
     result = client.post("/optimize", json=p).json()
     assert result["achieved"] == 0
+
+
+def test_reoptimization_prefers_original_equipment_when_goals_equal():
+    p = payload()
+    p["jobs"][0]["previousEquipmentIds"] = {
+        "helmet": "h2", "weapon": "w2", "armor": "a2", "artifact": "r2"
+    }
+    p["jobs"][1]["previousEquipmentIds"] = {
+        "helmet": "h1", "weapon": "w1", "armor": "a1", "artifact": "r1"
+    }
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 2
+    by_job = {b["ordinal"]: b["equipmentIds"] for b in result["builds"]}
+    assert by_job[1] == p["jobs"][0]["previousEquipmentIds"]
+    assert by_job[2] == p["jobs"][1]["previousEquipmentIds"]

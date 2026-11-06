@@ -36,7 +36,7 @@ async function save() {
   // Keep the legacy field for backup compatibility, but disable its behavior.
   p.maximizeStats = []
   p.priorityStats = []
-  try { await useDb().repo('presets').put(p); editing.value = null; await reload(); await app.refreshCounts() }
+  try { await useDb().repo('presets').put(JSON.parse(JSON.stringify(p)) as BuildPreset); editing.value = null; await reload(); await app.refreshCounts() }
   catch (e) { error.value = String(e) }
 }
 async function remove(p: BuildPreset) {

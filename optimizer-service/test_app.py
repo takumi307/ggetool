@@ -58,3 +58,22 @@ def test_async_job_returns_result():
         assert body["state"] == "running", body
         time.sleep(0.1)
     raise AssertionError("Asynchronous optimization did not complete")
+
+def test_identical_jobs_keep_original_optimum():
+    p = payload()
+    p["jobs"].append({"presetId": "p", "ordinal": 3, "priority": 1,
+                      "targets": [{"statId": "power", "minValue": 10}]})
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 2
+    assert [b["ordinal"] for b in result["builds"]] == [1, 2]
+
+def test_distinct_priorities_preserved():
+    p = payload()
+    p["jobs"][0]["priority"] = 2
+    p["jobs"][1]["priority"] = 1
+    p["reservedEquipmentIds"] = ["h1"]
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 1
+    assert result["builds"][0]["ordinal"] == 2

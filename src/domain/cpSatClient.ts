@@ -25,6 +25,7 @@ interface ServerResponse {
   status: string
   optimal: boolean
   achieved: number
+  upperBound?: number | null
   requested: number
   builds: ServerBuild[]
 }

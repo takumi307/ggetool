@@ -58,6 +58,8 @@ export async function optimizeCpSat(input: {
       stats: input.stats,
       jobs: input.jobs.map(j => ({
         presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
+        requireEquipment: Boolean(j.preset.requiredEquipmentKeyword?.trim()),
+        requiredEquipmentIds: j.preset.requiredEquipmentKeyword?.trim() ? input.equipment.filter(e => e.name.includes(j.preset.requiredEquipmentKeyword!.trim())).map(e => e.id) : [],
         targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
       })),
       reservedEquipmentIds: input.reservedEquipmentIds,
@@ -104,6 +106,7 @@ export async function optimizeCpSat(input: {
       if (!id || !eq.has(id) || eq.get(id)?.slotType !== slot || reservedEq.has(id) || usedEq.has(id)) throw new Error('装備の割当が不正です')
       usedEq.add(id)
     }
+    if (job.preset.requiredEquipmentKeyword?.trim() && !slots.some(slot => eq.get(b.equipmentIds[slot]!)?.name.includes(job.preset.requiredEquipmentKeyword!.trim()))) throw new Error('必須装備の条件を満たしていません')
     const gemSlots = new Set<string>()
     for (const a of b.gemAssignments) {
       const gem = gems.get(a.gemId)

@@ -2,6 +2,7 @@ import { canonicalStatId } from './statAliases'
 import type { BuildPreset, Equipment, Gem, StatDefinition } from './types'
 import type { OptimizationResult } from './optimizer'
 
+const npcBonusId = (preset: BuildPreset, statId: string): string | undefined => preset.name.includes('援軍特化') && canonicalStatId(statId) === 'S002' ? 'G005' : undefined
 export interface CpSatJob { preset: BuildPreset; ordinal: number; priority: number }
 export interface CpSatBuild { job: CpSatJob; result: OptimizationResult }
 export interface CpSatOutcome {
@@ -57,7 +58,7 @@ export async function optimizeCpSat(input: {
       stats: input.stats,
       jobs: input.jobs.map(j => ({
         presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
-        targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId) }))
+        targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
       })),
       reservedEquipmentIds: input.reservedEquipmentIds,
       reservedGemIds: input.reservedGemIds,
@@ -130,7 +131,7 @@ export async function optimizeCpSat(input: {
     for (const a of b.gemAssignments) addTo(gemTotals, gems.get(a.gemId)!.effects)
     const shortfalls = job.preset.targets.map(t => {
       const id = canonicalStatId(t.statId)
-      const actual = Math.min(equipmentTotals[id] ?? 0, caps.get(id) ?? Infinity) + (gemTotals[id] ?? 0)
+      const actual = Math.min(equipmentTotals[id] ?? 0, caps.get(id) ?? Infinity) + (gemTotals[id] ?? 0) + (gemTotals[npcBonusId(job.preset, t.statId) ?? ''] ?? 0)
       return { statId: t.statId, required: t.minValue, actual, missing: Math.max(0, t.minValue - actual - 1e-8) }
     })
     if (shortfalls.some(s => s.missing > 1e-8)) throw new Error('APIの候補が最低目標を満たしていません')

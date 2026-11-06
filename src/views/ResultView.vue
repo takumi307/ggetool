@@ -103,7 +103,7 @@ function showCommanderList() { router.push('/commanders') }
         </div>
       </v-card>
       <v-card class="pa-4 mb-3">
-        <h3 class="text-subtitle-1 font-weight-bold mb-3">ステータス詳細</h3>
+        <h3 class="text-subtitle-1 font-weight-bold mb-3">保存時のステータス詳細（装備欄ではゲーム風の内訳を表示）</h3>
         <p v-if="!numericStats.length" class="text-body-2">保存済みステータスがありません。</p>
         <div v-for="s in numericStats" :key="s.id" class="py-2">
           <div class="d-flex justify-space-between ga-2"><span>{{ statName(s.id) }}</span><strong>{{ s.effective }}{{ s.unit }}</strong></div>

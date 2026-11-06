@@ -55,7 +55,7 @@ async function remove(b: CommanderBuild) {
     </v-btn>
     <CommanderEquipmentPanel v-if="expandedId === b.id" :build="b" :equipment="equipment" :gems="gems" :stats="stats" />
     <v-expansion-panels class="mt-2">
-      <v-expansion-panel title="保存時のステータス">
+      <v-expansion-panel title="保存時のステータス（参考・再計算は装備セット内）">
         <v-expansion-panel-text>
           <div v-for="(value, id) in b.calculatedStats" :key="id">
             <template v-if="!String(id).startsWith('_')">{{ statName(String(id)) }}：{{ value }}</template>

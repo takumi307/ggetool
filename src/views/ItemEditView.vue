@@ -23,6 +23,13 @@ function prefillEffects(slot: SlotType) {
   effects.value = Array.from({ length: 3 }, (_, i) => ({ statId: ids[i] ?? '', value: 0 }))
 }
 watch(slotType, prefillEffects)
+watch([name, slotType, memo, effects, allowedSlots], () => { duplicates.value = []; duplicateConfirmed.value = false }, { deep: true })
+const duplicates = ref<(Equipment | Gem)[]>([])
+const duplicateConfirmed = ref(false)
+const normalize = (item: Equipment | Gem) => JSON.stringify({
+  slot: 'slotType' in item ? item.slotType : [...item.allowedSlots].sort(),
+  effects: [...item.effects].map(e => [e.statId, Number(e.value)]).sort((a,b) => String(a[0]).localeCompare(String(b[0])) || Number(a[1]) - Number(b[1]))
+})
 const error = ref(''), saving = ref(false), createdAt = ref('')
 const editId = computed(() => typeof route.params.id === 'string' ? route.params.id : '')
 const choices = computed(() => stats.value.filter(s => s.category === (props.kind === 'equipment' ? 'equipment' : 'gem')).map(s => ({ title: s.name, value: s.id })))
@@ -56,6 +63,12 @@ async function save() {
     : { ...base, allowedSlots: [...allowedSlots.value] }
   const issue = 'slotType' in item ? validateEquipment(item, stats.value) : validateGem(item, stats.value)
   if (issue) { error.value = issue; return }
+  const existing = await useDb().repo(props.kind).getAll()
+  duplicates.value = existing.filter(other => other.id !== item.id && normalize(other) === normalize(item))
+  if (duplicates.value.length && !duplicateConfirmed.value) {
+    error.value = '同じ部位・効果・数値の登録が見つかりました。重複の可能性を確認してください。'
+    return
+  }
   saving.value = true
   try {
     if ('slotType' in item) await useDb().repo('equipment').put(item)
@@ -68,6 +81,10 @@ async function save() {
 <template>
   <h2 class="text-h6 mb-4">{{ editId ? '編集' : '新規登録' }}：{{ kind === 'equipment' ? '装備' : 'ジェム' }}</h2>
   <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
+  <v-alert v-if="duplicates.length" type="warning" variant="tonal" class="mb-3">
+    同じ効果構成の登録：{{ duplicates.map(x => x.name).join('、') }}。ゲーム内で同じ性能の武具を複数所持している場合だけ、重複登録を許可してください。
+    <v-checkbox v-model="duplicateConfirmed" label="別個体を所持していることを確認して登録する" hide-details />
+  </v-alert>
   <v-form @submit.prevent="save">
     <v-text-field v-model="name" :label="kind === 'equipment' ? '装備名（任意）' : 'ジェム名（任意）'" hint="空欄なら保存時に自動で名前を付けます" persistent-hint />
     <v-select v-if="kind === 'equipment'" v-model="slotType" :items="slots" label="装備部位" />

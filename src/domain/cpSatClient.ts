@@ -118,8 +118,19 @@ export async function optimizeCpSat(input: {
     for (const slot of slots) add(eq.get(b.equipmentIds[slot]!)!.effects)
     for (const a of b.gemAssignments) add(gems.get(a.gemId)!.effects)
     const caps = new Map(input.stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap!]))
+    const equipmentTotals: Record<string, number> = {}
+    const gemTotals: Record<string, number> = {}
+    const addTo = (target: Record<string, number>, effects: { statId: string; value: number }[]) => {
+      for (const e of effects) {
+        const id = canonicalStatId(e.statId)
+        target[id] = (target[id] ?? 0) + e.value
+      }
+    }
+    for (const slot of slots) addTo(equipmentTotals, eq.get(b.equipmentIds[slot]!)!.effects)
+    for (const a of b.gemAssignments) addTo(gemTotals, gems.get(a.gemId)!.effects)
     const shortfalls = job.preset.targets.map(t => {
-      const actual = Math.min(totals[canonicalStatId(t.statId)] ?? 0, caps.get(canonicalStatId(t.statId)) ?? Infinity)
+      const id = canonicalStatId(t.statId)
+      const actual = Math.min(equipmentTotals[id] ?? 0, caps.get(id) ?? Infinity) + (gemTotals[id] ?? 0)
       return { statId: t.statId, required: t.minValue, actual, missing: Math.max(0, t.minValue - actual - 1e-8) }
     })
     if (shortfalls.some(s => s.missing > 1e-8)) throw new Error('APIの候補が最低目標を満たしていません')

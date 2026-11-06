@@ -88,3 +88,27 @@ def test_impossible_cap_upper_bound_zero():
     p["stats"][0]["cap"] = 5
     result = client.post("/optimize", json=p).json()
     assert result["upperBound"] == result["achieved"] == 0
+
+
+def test_gem_bonus_can_exceed_equipment_cap():
+    p = payload()
+    p["equipment"][0]["effects"][0]["value"] = 160
+    p["stats"][0]["cap"] = 140
+    p["gems"] = [{"id": "g1", "allowedSlots": ["helmet"],
+                  "effects": [{"statId": "power", "value": 20}]}]
+    p["jobs"] = [{"presetId": "p", "ordinal": 1, "priority": 1,
+                  "targets": [{"statId": "power", "minValue": 150}]}]
+    result = client.post("/optimize", json=p).json()
+    assert result["status"] == "OPTIMAL", result
+    assert result["achieved"] == 1
+    assert result["builds"][0]["shortfalls"][0]["actual"] == 160
+
+
+def test_equipment_cap_without_gem_still_limits_target():
+    p = payload()
+    p["equipment"][0]["effects"][0]["value"] = 160
+    p["stats"][0]["cap"] = 140
+    p["jobs"] = [{"presetId": "p", "ordinal": 1, "priority": 1,
+                  "targets": [{"statId": "power", "minValue": 150}]}]
+    result = client.post("/optimize", json=p).json()
+    assert result["achieved"] == 0

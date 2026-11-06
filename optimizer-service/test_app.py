@@ -41,3 +41,20 @@ def test_impossible_cap():
     body = client.post("/optimize", json=p).json()
     assert body["optimal"] is True
     assert body["achieved"] == 0
+
+def test_async_job_returns_result():
+    import time
+    start = client.post("/jobs", json=payload())
+    assert start.status_code == 202, start.text
+    job_id = start.json()["jobId"]
+    assert len(job_id) == 32
+    for _ in range(100):
+        response = client.get(f"/jobs/{job_id}")
+        assert response.status_code == 200
+        body = response.json()
+        if body["state"] == "completed":
+            assert body["result"]["achieved"] == 2
+            return
+        assert body["state"] == "running", body
+        time.sleep(0.1)
+    raise AssertionError("Asynchronous optimization did not complete")

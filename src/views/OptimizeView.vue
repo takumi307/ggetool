@@ -88,13 +88,14 @@ async function runPlans() {
         (_, index) => ({ preset, ordinal: done + index + 1, priority: plan.priority }))
     }).slice(0, 100)
     if (!jobs.length) { message.value = '最適化対象がありません'; return }
-    progress.value = `CP-SATで${jobs.length}体の装備配分を計算中（制限時間：${timeLimitSeconds.value}秒/段階）`
+    progress.value = `CP-SATで${jobs.length}体の装備配分を計算中（最大${timeLimitSeconds.value}秒/段階）。通信は短時間の状況確認に切り替えます`
     const response = await optimizeCpSat({
       jobs, equipment: equipment.value, gems: gems.value, stats: stats.value,
       reservedEquipmentIds: usedEq.map(a => a.equipmentId),
       reservedGemIds: usedGem.map(a => a.gemId),
       timeLimitSeconds: timeLimitSeconds.value,
-      signal: controller.value.signal
+      signal: controller.value.signal,
+      onProgress: (text: string) => { progress.value = text }
     })
     cpSatPreview.value = response.builds
     cpSatStatus.value = response.status
@@ -102,7 +103,7 @@ async function runPlans() {
     message.value = `${response.achieved} / ${response.requested}体が目標達成。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
   } catch (e) {
     message.value = e instanceof Error && e.name === 'AbortError'
-      ? '通信を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
+      ? '画面での待機を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
       : String(e)
   } finally { running.value = false; progress.value = ''; controller.value = null }
 }
@@ -140,7 +141,7 @@ async function saveCpSat() {
   <v-select v-if="activePlans.length" v-model="timeLimitSeconds" :items="[{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]" label="CP-SAT計算時間（各段階）" class="mb-3" />
   <div class="d-flex align-center ga-2 flex-wrap">
     <v-btn color="primary" :disabled="(!preset && !activePlans.length) || (activePlans.length > 0 && !cpSatEndpoint) || running" :loading="running" @click="run">{{ activePlans.length ? "CP-SATで全体最適化" : "最適化を実行" }}</v-btn>
-    <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="controller?.abort()">通信を中断</v-btn>
+    <v-btn v-if="running && activePlans.length" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
   </div>
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">

@@ -8,6 +8,7 @@ export interface CpSatOutcome {
   status: string
   optimal: boolean
   achieved: number
+  upperBound?: number | null
   requested: number
   builds: CpSatBuild[]
 }
@@ -127,5 +128,5 @@ export async function optimizeCpSat(input: {
     } })
   }
   if (builds.length !== data.achieved || builds.length > input.jobs.length) throw new Error('APIの件数が不正です')
-  return { status: data.status, optimal: data.optimal, achieved: builds.length, requested: data.requested, builds }
+  return { status: data.status, optimal: data.optimal, achieved: builds.length, upperBound: data.upperBound, requested: data.requested, builds }
 }

@@ -148,11 +148,17 @@ def optimize(data: Request):
     for j, job in enumerate(data.jobs):
         for target in job.targets:
             minimum = scaled(target.minValue)
-            if target.statId in caps and caps[target.statId] < minimum:
-                model.Add(active[j] == 0)
-                continue
-            terms = equipment_stat_terms[j, target.statId] + gem_stat_terms[j, target.statId]
-            model.Add(sum(terms) >= minimum * active[j])
+            equipment_terms = equipment_stat_terms[j, target.statId]
+            gem_terms = gem_stat_terms[j, target.statId]
+            if target.statId in caps:
+                # Cap applies to equipment effects only. Gem bonuses are
+                # additive beyond that cap (e.g. 140% equipment + 20% gems).
+                capped_equipment = model.NewIntVar(0, caps[target.statId], f"capped_eq_{j}_{target.statId}")
+                raw_equipment = sum(equipment_terms)
+                model.AddMinEquality(capped_equipment, [raw_equipment, caps[target.statId]])
+                model.Add(capped_equipment + sum(gem_terms) >= minimum * active[j])
+            else:
+                model.Add(sum(equipment_terms) + sum(gem_terms) >= minimum * active[j])
     # Lexicographic objective: number of successful builds first, priority second.
     count = sum(active)
     model.Maximize(count)
@@ -204,7 +210,7 @@ def optimize(data: Request):
             "gemAssignments": assignments,
             "totals": {key: val / SCALE for key, val in totals.items()},
             "shortfalls": [{"statId": t.statId, "required": t.minValue,
-                            "actual": min(totals.get(t.statId, 0), caps.get(t.statId, 10**18)) / SCALE,
+                            "actual": (min(sum(scaled(eff.value) for e in eq if e.id in chosen.values() for eff in e.effects if eff.statId == t.statId), caps[t.statId]) + sum(scaled(eff.value) for g in gems if g.id in gem_ids for eff in g.effects if eff.statId == t.statId)) / SCALE if t.statId in caps else totals.get(t.statId, 0) / SCALE,
                             "missing": 0} for t in job.targets],
             "overflow": [{"statId": key, "cap": cap / SCALE, "raw": totals[key] / SCALE}
                          for key, cap in caps.items() if totals.get(key, 0) > cap]

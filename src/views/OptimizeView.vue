@@ -15,6 +15,7 @@ const batchResults = ref<{ name: string; preset: string; result: OptimizationRes
 const cpSatPreview = ref<CpSatBuild[]>([])
 const cpSatStatus = ref('')
 const cpSatOptimal = ref(false)
+const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
 const controller = ref<AbortController | null>(null)
 const committing = ref(false)
@@ -73,7 +74,7 @@ async function run() {
 async function runPlans() {
   if (running.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
-  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''
+  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null
   controller.value = new AbortController()
   try {
     const db = useDb()
@@ -100,7 +101,8 @@ async function runPlans() {
     cpSatPreview.value = response.builds
     cpSatStatus.value = response.status
     cpSatOptimal.value = response.optimal
-    message.value = `${response.achieved} / ${response.requested}体が目標達成。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
+    cpSatUpperBound.value = response.upperBound ?? null
+    message.value = `${response.achieved} / ${response.requested}体が目標達成。理論上の上限：${response.upperBound ?? '算出不可'}体。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
   } catch (e) {
     message.value = e instanceof Error && e.name === 'AbortError'
       ? '画面での待機を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
@@ -147,6 +149,7 @@ async function saveCpSat() {
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">
     <h3 class="text-subtitle-1 mb-2">CP-SAT最適化結果（{{ cpSatPreview.length }}体）</h3>
     <v-chip :color="cpSatOptimal ? 'success' : 'warning'" class="mb-3">{{ cpSatOptimal ? 'OPTIMAL：最適性証明済み' : cpSatStatus + '：暫定解' }}</v-chip>
+    <div v-if="cpSatUpperBound !== null" class="mb-3">達成 {{ cpSatPreview.length }}体 ／ 理論上の上限 {{ cpSatUpperBound }}体 <span class="text-medium-emphasis">（差 {{ Math.max(0, cpSatUpperBound - cpSatPreview.length) }}体）</span></div>
     <div><v-btn color="primary" :loading="committing" :disabled="running" @click="saveCpSat">この{{ cpSatPreview.length }}体を保存</v-btn></div>
     <v-expansion-panels variant="accordion" class="mt-3">
       <v-expansion-panel v-for="(entry, index) in cpSatPreview" :key="index" :title="entry.job.preset.name + ' ' + entry.job.ordinal">

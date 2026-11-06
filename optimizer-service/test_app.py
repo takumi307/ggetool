@@ -77,3 +77,14 @@ def test_distinct_priorities_preserved():
     assert result["optimal"] is True
     assert result["achieved"] == 1
     assert result["builds"][0]["ordinal"] == 2
+
+def test_optimal_bound_matches_achieved():
+    result = client.post("/optimize", json=payload()).json()
+    assert result["status"] == "OPTIMAL"
+    assert result["upperBound"] == result["achieved"] == 2
+
+def test_impossible_cap_upper_bound_zero():
+    p = payload()
+    p["stats"][0]["cap"] = 5
+    result = client.post("/optimize", json=p).json()
+    assert result["upperBound"] == result["achieved"] == 0

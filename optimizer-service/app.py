@@ -56,7 +56,7 @@ class Request(BaseModel):
     jobs: list[Job] = Field(max_length=100)
     reservedEquipmentIds: list[str] = Field(default_factory=list)
     reservedGemIds: list[str] = Field(default_factory=list)
-    timeLimitSeconds: int = Field(default=60, ge=5, le=300)
+    timeLimitSeconds: int = Field(default=60, ge=5, le=1800)
     @model_validator(mode="after")
     def check_ids(self):
         if len({e.id for e in self.equipment}) != len(self.equipment):
@@ -158,7 +158,7 @@ def optimize(data: Request):
     model.Maximize(count)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = data.timeLimitSeconds
-    solver.parameters.num_search_workers = 2
+    solver.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
     status = solver.Solve(model)
     # Integer objective: CP-SAT best bound is a certified upper bound on the
     # maximum achievable count (not an estimate of the next feasible solution).
@@ -177,7 +177,7 @@ def optimize(data: Request):
         model.Maximize(sum(weights[j] * active[j] for j in range(n)))
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds
-        second.parameters.num_search_workers = 2
+        second.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
         second_status = second.Solve(model)
         if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             best_solver = second

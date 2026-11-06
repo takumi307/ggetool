@@ -108,8 +108,8 @@ def optimize(data: Request):
     y = {}
     equipment_uses = {e.id: [] for e in eq}
     gem_uses = {g.id: [] for g in gems}
-    equipment_stat_terms = {stat: [] for stat in relevant_stats}
-    gem_stat_terms = {stat: [] for stat in relevant_stats}
+    equipment_stat_terms = {(j, stat): [] for j in range(n) for stat in relevant_stats}
+    gem_stat_terms = {(j, stat): [] for j in range(n) for stat in relevant_stats}
     for j in range(n):
         for slot in SLOTS:
             slot_equipment = []
@@ -119,7 +119,7 @@ def optimize(data: Request):
                 slot_equipment.append(var)
                 equipment_uses[e.id].append(var)
                 for stat, value in equipment_effects[e.id].items():
-                    equipment_stat_terms[stat].append((j, value, var))
+                    equipment_stat_terms[j, stat].append(value * var)
             model.Add(sum(slot_equipment) == active[j])
             slot_gems = []
             for g in gems_by_slot[slot]:
@@ -128,7 +128,7 @@ def optimize(data: Request):
                 slot_gems.append(var)
                 gem_uses[g.id].append(var)
                 for stat, value in gem_effects[g.id].items():
-                    gem_stat_terms[stat].append((j, value, var))
+                    gem_stat_terms[j, stat].append(value * var)
             model.Add(sum(slot_gems) <= active[j])
     for uses in equipment_uses.values():
         model.Add(sum(uses) <= 1)
@@ -151,8 +151,7 @@ def optimize(data: Request):
             if target.statId in caps and caps[target.statId] < minimum:
                 model.Add(active[j] == 0)
                 continue
-            terms = [value * var for jj, value, var in equipment_stat_terms[target.statId] if jj == j]
-            terms.extend(value * var for jj, value, var in gem_stat_terms[target.statId] if jj == j)
+            terms = equipment_stat_terms[j, target.statId] + gem_stat_terms[j, target.statId]
             model.Add(sum(terms) >= minimum * active[j])
     # Lexicographic objective: number of successful builds first, priority second.
     count = sum(active)

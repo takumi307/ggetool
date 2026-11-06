@@ -46,9 +46,9 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   const add = (totals: Record<string, number>, effects: { statId: string; value: number }[]) => {
     for (const effect of effects) totals[canonicalStatId(effect.statId)] = (totals[canonicalStatId(effect.statId)] ?? 0) + effect.value
   }
-  const capped = (id: string, totals: Record<string, number>) => Math.min(totals[id] ?? 0, caps.get(id) ?? Infinity)
-  const score = (totals: Record<string, number>) => {
-    const misses = input.preset.targets.map(t => Math.max(0, t.minValue - capped(canonicalStatId(t.statId), totals)))
+  const capped = (id: string, equipmentTotals: Record<string, number>, gemTotals: Record<string, number>) => Math.min(equipmentTotals[id] ?? 0, caps.get(id) ?? Infinity) + (gemTotals[id] ?? 0)
+  const score = (equipmentTotals: Record<string, number>, gemTotals: Record<string, number>) => {
+    const misses = input.preset.targets.map(t => Math.max(0, t.minValue - capped(canonicalStatId(t.statId), equipmentTotals, gemTotals)))
     const totalMiss = misses.reduce((a, b) => a + b, 0)
     // Evaluate only whether minimum targets are met and how far short they are.
     return [misses.every(m => m === 0) ? 1 : 0, -totalMiss]
@@ -68,17 +68,19 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     if (evaluated >= max) { stopped = true; return }
     evaluated++
     const totals: Record<string, number> = {}
-    for (const e of selected) add(totals, e.effects)
+    const equipmentTotals: Record<string, number> = {}
+    const gemTotals: Record<string, number> = {}
+    for (const e of selected) { add(totals, e.effects); add(equipmentTotals, e.effects) }
     for (const a of assignments) {
       const gem = gems.find(g => g.id === a.gemId)
-      if (gem) add(totals, gem.effects)
+      if (gem) { add(totals, gem.effects); add(gemTotals, gem.effects) }
     }
-    const s = score(totals)
+    const s = score(equipmentTotals, gemTotals)
     if (bestScore && !better(s, bestScore)) return
     bestScore = s
     const shortfalls = input.preset.targets.map(t => ({
-      statId: t.statId, required: t.minValue, actual: capped(canonicalStatId(t.statId), totals),
-      missing: Math.max(0, t.minValue - capped(canonicalStatId(t.statId), totals))
+      statId: t.statId, required: t.minValue, actual: capped(canonicalStatId(t.statId), equipmentTotals, gemTotals),
+      missing: Math.max(0, t.minValue - capped(canonicalStatId(t.statId), equipmentTotals, gemTotals))
     }))
     bestState.value = {
       equipmentIds: Object.fromEntries(selected.map(e => [e.slotType, e.id])),

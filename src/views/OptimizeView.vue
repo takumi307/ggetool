@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
+import { canonicalStatId } from '@/domain/statAliases'
 import { useRoute } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander } from '@/domain/commanderService'
@@ -14,6 +15,8 @@ const progress = ref('')
 const batchResults = ref<{ name: string; preset: string; result: OptimizationResult }[]>([])
 const cpSatPreview = ref<CpSatBuild[]>([])
 const cpSatStatus = ref('')
+const zeroDiagnostics = ref<{ preset: string; stat: string; required: number; optimistic: number; impossible: boolean }[]>([])
+const missingSlots = ref<string[]>([])
 const cpSatOptimal = ref(false)
 const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
@@ -76,7 +79,7 @@ async function run() {
 async function runPlans() {
   if (running.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
-  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null
+  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null; zeroDiagnostics.value = []; missingSlots.value = []
   controller.value = new AbortController()
   try {
     const db = useDb()
@@ -109,6 +112,24 @@ async function runPlans() {
       endpoint: executionMode.value === 'local' ? localEndpoint : cpSatEndpoint,
       onProgress: (text: string) => { progress.value = text }
     })
+    if (response.achieved === 0) {
+      const reservedEq = new Set(usedEq.map(a => a.equipmentId))
+      const reservedGem = new Set(usedGem.map(a => a.gemId))
+      const availableEq = equipment.value.filter(e => !reservedEq.has(e.id))
+      const availableGems = gems.value.filter(g => !reservedGem.has(g.id))
+      const slots = SLOT_TYPES
+      missingSlots.value = slots.filter(slot => !availableEq.some(e => e.slotType === slot)).map(slot => SLOT_LABELS[slot])
+      const capMap = new Map(stats.value.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [canonicalStatId(s.id), s.cap!]))
+      const effectSum = (effects: { statId: string; value: number }[], id: string) => effects.reduce((n, e) => n + (canonicalStatId(e.statId) === id ? e.value : 0), 0)
+      const distinctPresets = [...new Map(jobs.map(j => [j.preset.id, j.preset])).values()]
+      zeroDiagnostics.value = distinctPresets.flatMap(p => p.targets.map(t => {
+        const id = canonicalStatId(t.statId)
+        const equipmentMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableEq.filter(e => e.slotType === slot).map(e => effectSum(e.effects, id))), 0)
+        const gemMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableGems.filter(g => g.allowedSlots.includes(slot)).map(g => effectSum(g.effects, id))), 0)
+        const optimistic = Math.min(equipmentMax, capMap.get(id) ?? Infinity) + gemMax
+        return { preset: p.name, stat: statName(t.statId), required: t.minValue, optimistic, impossible: optimistic + 1e-8 < t.minValue }
+      }))
+    }
     cpSatPreview.value = response.builds
     cpSatStatus.value = response.status
     cpSatOptimal.value = response.optimal
@@ -152,7 +173,7 @@ async function saveCpSat() {
   <v-alert v-if="activePlans.length && executionMode === 'render' && !cpSatEndpoint" type="warning" variant="tonal" class="mb-3">CP-SATサーバーが未設定です。VITE_OPTIMIZER_API_URLをCloudflareのビルド環境に設定してください。</v-alert>
   <v-select v-if="!activePlans.length" v-model="mode" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
   <v-select v-if="activePlans.length" v-model="executionMode" :items="[{ title: 'Render（クラウド）', value: 'render' }, { title: 'このPC（ローカルCP-SAT）', value: 'local' }]" label="最適化の実行先" class="mb-3" />
-  <v-alert v-if="activePlans.length && executionMode === 'local'" type="info" variant="tonal" class="mb-3">PCにPython版の最適化サーバーを起動してください（127.0.0.1:8080）。計算はこのPCで実行し、装備データはRenderに送信しません。セットアップ手順は optimizer-service/LOCAL_WINDOWS.md を参照してください。</v-alert>
+  <v-alert v-if="activePlans.length && executionMode === 'local'" type="info" variant="tonal" class="mb-3">PCにPython版の最適化サーバーを起動してください（127.0.0.1:8765）。計算はこのPCで実行し、装備データはRenderに送信しません。セットアップ手順は optimizer-service/LOCAL_WINDOWS.md を参照してください。</v-alert>
   <v-select v-if="activePlans.length" v-model="timeLimitSeconds" :items="executionMode === 'local' ? [{ title: '1分', value: 60 }, { title: '5分', value: 300 }, { title: '10分', value: 600 }, { title: '30分', value: 1800 }] : [{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]" label="CP-SAT計算時間（各段階）" class="mb-3" />
   <div class="d-flex align-center ga-2 flex-wrap">
     <v-btn color="primary" :disabled="(!preset && !activePlans.length) || (activePlans.length > 0 && executionMode === 'render' && !cpSatEndpoint) || running" :loading="running" @click="run">{{ activePlans.length ? "CP-SATで全体最適化" : "最適化を実行" }}</v-btn>
@@ -175,6 +196,14 @@ async function saveCpSat() {
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
+  </v-card>
+  <v-card v-if="zeroDiagnostics.length || missingSlots.length" class="pa-4 mt-3">
+    <h3 class="text-subtitle-1 mb-2">0体の原因診断（利用可能な装備・ジェムから計算）</h3>
+    <v-alert v-if="missingSlots.length" type="error" variant="tonal" class="mb-2">未使用装備がない部位：{{ missingSlots.join('、') }}</v-alert>
+    <v-alert type="info" variant="tonal" class="mb-3">下記の「楽観的最大値」は、各部位の装備・ジェムの最高値を個別に合算した上界です。同じジェムを複数部位で数える場合があり、実際に組める保証はありません。最低目標未満なら、その効果単独でも達成不可能です。</v-alert>
+    <v-table density="compact"><thead><tr><th>プリセット</th><th>効果</th><th>最低目標</th><th>楽観的最大値</th><th>判定</th></tr></thead>
+      <tbody><tr v-for="(d, i) in zeroDiagnostics" :key="i"><td>{{ d.preset }}</td><td>{{ d.stat }}</td><td>{{ d.required }}</td><td>{{ Number(d.optimistic.toFixed(3)) }}</td><td>{{ d.impossible ? '単独でも達成不可' : '単独では可能性あり' }}</td></tr></tbody></v-table>
+    <div class="text-caption mt-2">全項目が「可能性あり」でも、5条件の同時達成や装備・ジェムの重複禁止によって0体になる場合があります。設定値を自動変更することはありません。</div>
   </v-card>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
   <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み司令官を確認</router-link></v-alert>

@@ -40,12 +40,14 @@ export async function optimizeCpSat(input: {
   reservedGemIds: string[]
   timeLimitSeconds: number
   signal?: AbortSignal
+  endpoint?: string
   onProgress?: (message: string) => void
 }): Promise<CpSatOutcome> {
-  if (!cpSatEndpoint) throw new Error('CP-SAT APIが未設定です。VITE_OPTIMIZER_API_URLを設定してください。')
+  const endpoint = input.endpoint ?? cpSatEndpoint
+  if (!endpoint) throw new Error('CP-SAT APIが未設定です。VITE_OPTIMIZER_API_URLを設定してください。')
   // Submit once, then poll short requests; a 5-minute solve must not depend
   // on keeping a single browser/Cloudflare/Render connection open.
-  const response = await fetch(cpSatEndpoint + '/jobs', {
+  const response = await fetch(endpoint + '/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: input.signal,
@@ -74,7 +76,7 @@ export async function optimizeCpSat(input: {
       const abort = () => { clearTimeout(timer); reject(new DOMException('中断しました', 'AbortError')) }
       input.signal?.addEventListener('abort', abort, { once: true })
     })
-    const poll = await fetch(cpSatEndpoint + '/jobs/' + started.jobId, { signal: input.signal })
+    const poll = await fetch(endpoint + '/jobs/' + started.jobId, { signal: input.signal })
     if (poll.status === 404) throw new Error('Renderが再起動し、計算ジョブが失われました。再実行してください。')
     if (!poll.ok) throw new Error('計算状況の取得に失敗: HTTP ' + poll.status)
     const state = await poll.json() as { state: string; result?: ServerResponse; error?: string }

@@ -120,9 +120,9 @@ async function runPlans() {
           return Array.from({ length: Math.min(100, Math.max(0, plan.count - done)) },
             (_, index) => ({ preset: chosen, ordinal: done + index + 1, priority: plan.priority }))
         }).slice(0, 100)
-      : targetCommanders.map(c => ({
+      : targetCommanders.map((c, index) => ({
           preset: presets.value.find(p => p.id === c.presetId)!,
-          ordinal: (commanderNumber(c, commanders) ?? 35) + 100,
+          ordinal: index + 101,
           priority: activePlans.value.find(p => p.presetId === c.presetId)?.priority ?? 1,
           commanderId: c.id,
           previousEquipmentIds: c.equipmentIds,
@@ -192,7 +192,9 @@ async function saveCpSat() {
         commanderId: entry.job.commanderId!,
         equipmentIds: entry.result.equipmentIds,
         gemAssignments: entry.result.gemAssignments,
-        calculatedStats: { ...entry.result.totals, _approximate: entry.result.approximate }
+        calculatedStats: { ...entry.result.totals, _approximate: entry.result.approximate },
+        expectedEquipmentIds: existingCommanders.value.find(c => c.id === entry.job.commanderId)!.equipmentIds,
+        expectedGemAssignments: existingCommanders.value.find(c => c.id === entry.job.commanderId)!.gemAssignments
       })))
       saved.value = `${cpSatPreview.value.length}体を一括更新しました（変更した装備・ジェムの割当：${movedItems.value}箇所）`
       cpSatPreview.value = []

@@ -21,10 +21,13 @@ export async function saveCommander(db: Database, name: string, presetId: string
     if (!SLOT_TYPES.includes(a.slotType) || !gems.some((g: Gem) => g.id === a.gemId && g.allowedSlots.includes(a.slotType))) throw Error('ジェムが変更または削除されています')
   }
   if (new Set(result.gemAssignments.map(a => a.slotType)).size !== result.gemAssignments.length) throw Error('同じ部位に複数のジェムは装着できません')
+  const usedPositions = new Set(commanders.map(c => commanderNumber(c, commanders)).filter((n): n is number => n !== undefined))
+  const position = Array.from({length:35}, (_,i)=>i+1).find(n=>!usedPositions.has(n))
+  if (!position) throw Error('司令官は35体までです。空き番号がありません')
   const id = crypto.randomUUID(), now = new Date().toISOString()
   const equipmentIds = Object.fromEntries(chosen.map(v => [v.slot, v.id])) as Partial<Record<SlotType, string>>
   const build: CommanderBuild = {
-    id, name: name.trim(), presetId, equipmentIds, gemAssignments: result.gemAssignments.map(a => ({ ...a })),
+    id, position, name: name.trim(), presetId, equipmentIds, gemAssignments: result.gemAssignments.map(a => ({ ...a })),
     calculatedStats: { ...result.totals, _approximate: result.approximate }, createdAt: now
   }
   await db.replaceAll({
@@ -79,6 +82,8 @@ export interface ReplacementBuild {
   equipmentIds: Partial<Record<SlotType, string>>
   gemAssignments: { slotType: SlotType; gemId: string }[]
   calculatedStats: Record<string, unknown>
+  expectedEquipmentIds: Partial<Record<SlotType, string>>
+  expectedGemAssignments: { slotType: SlotType; gemId: string }[]
 }
 /** One IndexedDB transaction replaces all affected allocations or none.
  * Reject stale previews, locked commanders, and every conflicting item. */
@@ -100,6 +105,9 @@ export async function replaceCommanderAssignments(db: Database, replacements: Re
   for (const r of replacements) {
     const old = builds.find(b => b.id === r.commanderId)
     if (!old || old.locked) throw Error('対象司令官が見つからないか、ロックされています')
+    if (JSON.stringify(old.equipmentIds) !== JSON.stringify(r.expectedEquipmentIds) ||
+        JSON.stringify([...old.gemAssignments].sort((a,b)=>a.slotType.localeCompare(b.slotType))) !== JSON.stringify([...r.expectedGemAssignments].sort((a,b)=>a.slotType.localeCompare(b.slotType))))
+      throw Error('最適化後に司令官の構成が変更されました。再実行してください')
     for (const slot of SLOT_TYPES) {
       const id = r.equipmentIds[slot]
       if (!id || eqById.get(id)?.slotType !== slot || usedEq.has(id)) throw Error('装備の重複または部位不一致：' + slot)

@@ -45,3 +45,88 @@ export async function deleteCommander(db: Database, id: string): Promise<void> {
     gemAllocations: gemAlloc.filter(a => a.commanderBuildId !== id)
   })
 }
+
+/** Stable physical position on the game's 1–35 commander roster. */
+export function commanderNumber(build: CommanderBuild, all: CommanderBuild[]): number | undefined {
+  if (Number.isInteger(build.position) && build.position! >= 1 && build.position! <= 35) return build.position
+  const taken = new Set(all.map(b => b.position).filter((n): n is number => Number.isInteger(n) && n! >= 1 && n! <= 35))
+  const legacy = [...all].filter(b => !b.position).sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+  for (const b of legacy) {
+    const next = Array.from({ length: 35 }, (_,i) => i + 1).find(n => !taken.has(n))
+    if (!next) break
+    if (b.id === build.id) return next
+    taken.add(next)
+  }
+  return undefined
+}
+
+export async function setCommanderPosition(db: Database, id: string, position: number): Promise<void> {
+  if (!Number.isInteger(position) || position < 1 || position > 35) throw Error('司令官番号は1〜35で指定してください')
+  const builds = await db.repo('commanders').getAll()
+  const build = builds.find(b => b.id === id)
+  if (!build) throw Error('司令官が見つかりません')
+  if (builds.some(b => b.id !== id && commanderNumber(b, builds) === position)) throw Error('この番号は別の司令官が使用中です')
+  await db.repo('commanders').put({ ...build, position })
+}
+export async function setCommanderLocked(db: Database, id: string, locked: boolean): Promise<void> {
+  const build = await db.repo('commanders').get(id)
+  if (!build) throw Error('司令官が見つかりません')
+  await db.repo('commanders').put({ ...build, locked })
+}
+
+export interface ReplacementBuild {
+  commanderId: string
+  equipmentIds: Partial<Record<SlotType, string>>
+  gemAssignments: { slotType: SlotType; gemId: string }[]
+  calculatedStats: Record<string, unknown>
+}
+/** One IndexedDB transaction replaces all affected allocations or none.
+ * Reject stale previews, locked commanders, and every conflicting item. */
+export async function replaceCommanderAssignments(db: Database, replacements: ReplacementBuild[]): Promise<void> {
+  if (!replacements.length) throw Error('保存する変更がありません')
+  const [builds, equipment, gems, eqAlloc, gemAlloc] = await Promise.all([
+    db.repo('commanders').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(),
+    db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
+  ])
+  const ids = new Set(replacements.map(r => r.commanderId))
+  if (ids.size !== replacements.length) throw Error('司令官が重複しています')
+  const eqById = new Map(equipment.map(e => [e.id,e]))
+  const gemById = new Map(gems.map(g => [g.id,g]))
+  const usedEq = new Set(eqAlloc.filter(a => !ids.has(a.commanderBuildId)).map(a => a.equipmentId))
+  const usedGem = new Set(gemAlloc.filter(a => !ids.has(a.commanderBuildId)).map(a => a.gemId))
+  const updated = new Map<string, CommanderBuild>()
+  const newEq: typeof eqAlloc = [], newGem: typeof gemAlloc = []
+  const now = new Date().toISOString()
+  for (const r of replacements) {
+    const old = builds.find(b => b.id === r.commanderId)
+    if (!old || old.locked) throw Error('対象司令官が見つからないか、ロックされています')
+    for (const slot of SLOT_TYPES) {
+      const id = r.equipmentIds[slot]
+      if (!id || eqById.get(id)?.slotType !== slot || usedEq.has(id)) throw Error('装備の重複または部位不一致：' + slot)
+      usedEq.add(id)
+      newEq.push({ equipmentId: id, commanderBuildId: old.id, slotType: slot, allocatedAt: now })
+    }
+    const seenSlots = new Set<SlotType>()
+    for (const a of r.gemAssignments) {
+      if (seenSlots.has(a.slotType) || !gemById.get(a.gemId)?.allowedSlots.includes(a.slotType) || usedGem.has(a.gemId)) throw Error('ジェムの重複または部位不一致')
+      seenSlots.add(a.slotType); usedGem.add(a.gemId)
+      newGem.push({ gemId: a.gemId, commanderBuildId: old.id, slotType: a.slotType, allocatedAt: now })
+    }
+    updated.set(old.id, { ...old, equipmentIds: { ...r.equipmentIds }, gemAssignments: r.gemAssignments.map(a => ({ ...a })), calculatedStats: { ...r.calculatedStats } })
+  }
+  // Stale preview protection: items owned by a target must still match its
+  // original allocation before a replacement can commit.
+  for (const old of builds.filter(b => ids.has(b.id))) {
+    const expectedEq = Object.values(old.equipmentIds).filter(Boolean).sort()
+    const currentEq = eqAlloc.filter(a => a.commanderBuildId === old.id).map(a => a.equipmentId).sort()
+    const expectedGem = old.gemAssignments.map(a => a.gemId).sort()
+    const currentGem = gemAlloc.filter(a => a.commanderBuildId === old.id).map(a => a.gemId).sort()
+    if (JSON.stringify(expectedEq) !== JSON.stringify(currentEq) || JSON.stringify(expectedGem) !== JSON.stringify(currentGem))
+      throw Error('装備の割当が変更されました。再度最適化してください')
+  }
+  await db.replaceAll({
+    commanders: builds.map(b => updated.get(b.id) ?? b),
+    equipmentAllocations: [...eqAlloc.filter(a => !ids.has(a.commanderBuildId)), ...newEq],
+    gemAllocations: [...gemAlloc.filter(a => !ids.has(a.commanderBuildId)), ...newGem]
+  })
+}

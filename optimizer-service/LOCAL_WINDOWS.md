@@ -20,10 +20,10 @@ Cloudflareで開いているWebアプリの**正確なオリジン**（https://�
 ```powershell
 $env:CORS_ORIGINS = "https://ggetool.takutaku307.workers.dev"
 $env:CPSAT_WORKERS = "4"
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8080
+.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8765
 ```
 
-ブラウザで `http://127.0.0.1:8080/health` にアクセスし、`{"ok":true}` が返れば起動できています。**PowerShellを閉じると停止します。**
+ブラウザで `http://127.0.0.1:8765/health` にアクセスし、`{"ok":true}` が返れば起動できています。**PowerShellを閉じると停止します。**
 
 ## アプリ側
 

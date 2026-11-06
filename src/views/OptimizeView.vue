@@ -18,7 +18,7 @@ const cpSatOptimal = ref(false)
 const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
 const executionMode = ref<'render' | 'local'>('render')
-const localEndpoint = 'http://127.0.0.1:8080'
+const localEndpoint = 'http://127.0.0.1:8765'
 const controller = ref<AbortController | null>(null)
 const committing = ref(false)
 const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))

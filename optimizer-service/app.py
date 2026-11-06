@@ -46,6 +46,8 @@ class Target(BaseModel):
     npcBonusStatId: str | None = None
     minValue: float = Field(ge=0, le=100000)
 class Job(BaseModel):
+    requiredEquipmentIds: list[str] = Field(default_factory=list)
+    requireEquipment: bool = False
     presetId: str
     ordinal: int = Field(ge=1)
     priority: int = Field(ge=1)
@@ -140,11 +142,17 @@ def optimize(data: Request):
     # and priority objective without restricting distinct jobs.
     previous_identical = {}
     for j, job in enumerate(data.jobs):
-        signature = (job.presetId, job.priority,
+        signature = (job.presetId, job.priority, tuple(sorted(job.requiredEquipmentIds)),
                      tuple(sorted((t.statId, t.npcBonusStatId or '', scaled(t.minValue)) for t in job.targets)))
         if signature in previous_identical:
             model.Add(active[j] <= active[previous_identical[signature]])
         previous_identical[signature] = j
+    # Require at least one named equipment item in every active build.
+    for j, job in enumerate(data.jobs):
+        if job.requireEquipment:
+            allowed = set(job.requiredEquipmentIds)
+            model.Add(sum(var for (job_idx, slot, eid), var in x.items()
+                          if job_idx == j and eid in allowed) >= active[j])
     # Each minimum target is a linear sum of equipment and gem contributions.
     for j, job in enumerate(data.jobs):
         for target in job.targets:

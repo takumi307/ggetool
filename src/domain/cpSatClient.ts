@@ -38,24 +38,49 @@ export async function optimizeCpSat(input: {
   reservedGemIds: string[]
   timeLimitSeconds: number
   signal?: AbortSignal
+  onProgress?: (message: string) => void
 }): Promise<CpSatOutcome> {
   if (!cpSatEndpoint) throw new Error('CP-SAT APIが未設定です。VITE_OPTIMIZER_API_URLを設定してください。')
-  const response = await fetch(cpSatEndpoint + '/optimize', {
+  // Submit once, then poll short requests; a 5-minute solve must not depend
+  // on keeping a single browser/Cloudflare/Render connection open.
+  const response = await fetch(cpSatEndpoint + '/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: input.signal,
     body: JSON.stringify({
-      equipment: input.equipment, gems: input.gems.map(g => ({ ...g, effects: g.effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })) })), stats: input.stats,
+      equipment: input.equipment,
+      gems: input.gems.map(g => ({ ...g, effects: g.effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })) })),
+      stats: input.stats,
       jobs: input.jobs.map(j => ({
-        presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority, targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId) }))
+        presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
+        targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId) }))
       })),
       reservedEquipmentIds: input.reservedEquipmentIds,
       reservedGemIds: input.reservedGemIds,
       timeLimitSeconds: input.timeLimitSeconds
     })
   })
-  if (!response.ok) throw new Error('CP-SAT APIエラー: HTTP ' + response.status)
-  const data = await response.json() as ServerResponse
+  if (!response.ok) throw new Error('CP-SATジョブ開始エラー: HTTP ' + response.status)
+  const started = await response.json() as { jobId: string }
+  if (!/^[a-f0-9]{32}$/.test(started.jobId)) throw new Error('不正なジョブIDです')
+  const deadline = Date.now() + input.timeLimitSeconds * 2000 + 120000
+  let data: ServerResponse | undefined
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve, reject) => {
+      if (input.signal?.aborted) { reject(new DOMException('中断しました', 'AbortError')); return }
+      const timer = setTimeout(() => { input.signal?.removeEventListener('abort', abort); resolve() }, 3000)
+      const abort = () => { clearTimeout(timer); reject(new DOMException('中断しました', 'AbortError')) }
+      input.signal?.addEventListener('abort', abort, { once: true })
+    })
+    const poll = await fetch(cpSatEndpoint + '/jobs/' + started.jobId, { signal: input.signal })
+    if (poll.status === 404) throw new Error('Renderが再起動し、計算ジョブが失われました。再実行してください。')
+    if (!poll.ok) throw new Error('計算状況の取得に失敗: HTTP ' + poll.status)
+    const state = await poll.json() as { state: string; result?: ServerResponse; error?: string }
+    if (state.state === 'failed') throw new Error('CP-SAT計算エラー: ' + (state.error ?? '不明'))
+    if (state.state === 'completed') { data = state.result; break }
+    input.onProgress?.('CP-SAT計算中… 経過 ' + Math.round((input.timeLimitSeconds * 2000 + 120000 - (deadline - Date.now())) / 1000) + '秒')
+  }
+  if (!data) throw new Error('計算待ちが制限時間を超えました。Renderのログを確認してください。')
   if (!Array.isArray(data.builds)) throw new Error('CP-SAT APIから不正な応答が返されました')
   const jobs = new Map(input.jobs.map(j => [j.preset.id + ':' + j.ordinal, j]))
   const eq = new Map(input.equipment.map(e => [e.id, e]))

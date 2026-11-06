@@ -5,6 +5,10 @@ No user data is persisted. Deploy behind authentication and rate limits.
 """
 import math
 import os
+import time
+import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 from fastapi import FastAPI, HTTPException
@@ -171,3 +175,56 @@ def optimize(data: Request):
     return {"status": best_solver.StatusName(final_status),
             "optimal": status == cp_model.OPTIMAL and final_status == cp_model.OPTIMAL,
             "achieved": len(builds), "requested": n, "builds": builds}
+
+# Asynchronous jobs avoid holding a browser/proxy HTTP connection open during
+# long CP-SAT searches. Free Render has ephemeral process memory: restarting
+# the service loses running jobs; callers receive 404 and may retry.
+_JOB_TTL = 60 * 60
+_job_lock = threading.Lock()
+_jobs: dict[str, dict] = {}
+_executor = ThreadPoolExecutor(max_workers=1)
+_MAX_JOBS = 12
+
+def _expire_jobs():
+    now = time.monotonic()
+    for key, job in list(_jobs.items()):
+        if job["state"] != "running" and now - job["updated"] > _JOB_TTL:
+            del _jobs[key]
+
+def _run_job(job_id: str, data: Request):
+    try:
+        result = optimize(data)
+        with _job_lock:
+            _jobs[job_id].update(state="completed", result=result, updated=time.monotonic())
+    except Exception as exc:
+        with _job_lock:
+            _jobs[job_id].update(state="failed", error=str(exc), updated=time.monotonic())
+
+@app.post("/jobs", status_code=202)
+def start_job(data: Request):
+    with _job_lock:
+        _expire_jobs()
+        # Free-tier instance: prevent unbounded CPU and memory queues.
+        if any(job["state"] == "running" for job in _jobs.values()):
+            raise HTTPException(status_code=429, detail="別の最適化を実行中です。完了後に再試行してください。")
+        if len(_jobs) >= _MAX_JOBS:
+            oldest = min(_jobs, key=lambda key: _jobs[key]["updated"])
+            del _jobs[oldest]
+        job_id = uuid.uuid4().hex
+        _jobs[job_id] = {"state": "running", "updated": time.monotonic()}
+    _executor.submit(_run_job, job_id, data)
+    return {"jobId": job_id, "state": "running"}
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    with _job_lock:
+        _expire_jobs()
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="計算ジョブが見つかりません。サーバー再起動の可能性があります。")
+        response = {"jobId": job_id, "state": job["state"]}
+        if "result" in job:
+            response["result"] = job["result"]
+        if "error" in job:
+            response["error"] = job["error"]
+        return response

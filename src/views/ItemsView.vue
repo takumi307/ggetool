@@ -6,9 +6,11 @@ import { SLOT_LABELS, SLOT_TYPES, type Equipment, type Gem, type StatDefinition 
 const props = defineProps<{ kind: 'equipment' | 'gems' }>()
 const router = useRouter(), app = useAppStore()
 const items = ref<(Equipment | Gem)[]>([]), stats = ref<StatDefinition[]>([]), assigned = ref<string[]>([]), error = ref('')
+const orderedItems = computed(() => [...items.value].sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)))
+const registrationNo = (id: string) => orderedItems.value.findIndex(x => x.id === id) + 1
 const title = computed(() => props.kind === 'equipment' ? '装備管理' : 'ジェム管理')
 const keyword = ref(''), slotFilter = ref('all'), showAssigned = ref('all')
-const visible = computed(() => items.value.filter(item => {
+const visible = computed(() => orderedItems.value.filter(item => {
   if (props.kind === 'equipment' && slotFilter.value !== 'all' && 'slotType' in item && item.slotType !== slotFilter.value) return false
   if (showAssigned.value === 'unused' && assigned.value.includes(item.id)) return false
   if (showAssigned.value === 'assigned' && !assigned.value.includes(item.id)) return false
@@ -50,13 +52,13 @@ async function remove(item: Equipment | Gem) {
     <v-col v-if="kind === 'equipment'" cols="6" sm="4"><v-select v-model="slotFilter" :items="slotOptions" label="部位" density="compact" hide-details /></v-col>
     <v-col cols="6" sm="3"><v-select v-model="showAssigned" :items="assignedOptions" label="使用状況" density="compact" hide-details /></v-col>
   </v-row>
-  <p class="text-caption mb-2">{{ visible.length }} / {{ items.length }} 件</p>
+  <p class="text-caption mb-2">{{ visible.length }} / {{ items.length }} 件（番号は登録日時順・削除後は振り直し）</p>
   <v-alert v-if="items.length && !visible.length" type="info" variant="tonal">検索条件に一致するデータがありません。</v-alert>
   <v-row dense>
     <v-col v-for="item in visible" :key="item.id" cols="12" lg="6">
       <v-card class="pa-3 mb-2" height="100%" variant="outlined">
         <div class="d-flex ga-2 flex-wrap align-center mb-3">
-          <strong class="text-subtitle-1">{{ item.name }}</strong>
+          <v-chip size="small" color="primary" variant="tonal">#{{ registrationNo(item.id) }}</v-chip><strong class="text-subtitle-1">{{ item.name }}</strong>
           <v-chip v-if="'slotType' in item" size="small">{{ SLOT_LABELS[item.slotType] }}</v-chip>
           <v-chip v-if="assigned.includes(item.id)" color="warning" size="small">使用中</v-chip>
           <v-chip v-else color="success" size="small" variant="tonal">未使用</v-chip>

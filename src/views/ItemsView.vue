@@ -2,10 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
-import { SLOT_LABELS, SLOT_TYPES, type Equipment, type Gem, type StatDefinition } from '@/domain'
+import { commanderNumber } from '@/domain/commanderService'
+import { SLOT_LABELS, SLOT_TYPES, type Equipment, type Gem, type StatDefinition, type CommanderBuild } from '@/domain'
 const props = defineProps<{ kind: 'equipment' | 'gems' }>()
 const router = useRouter(), app = useAppStore()
 const items = ref<(Equipment | Gem)[]>([]), stats = ref<StatDefinition[]>([]), assigned = ref<string[]>([]), error = ref('')
+const owners = ref<Record<string,string>>({})
 const orderedItems = computed(() => [...items.value].sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)))
 const registrationNo = (id: string) => orderedItems.value.findIndex(x => x.id === id) + 1
 const title = computed(() => props.kind === 'equipment' ? '装備管理' : 'ジェム管理')
@@ -23,9 +25,16 @@ const unit = (id: string) => stats.value.find(s => s.id === id)?.unit ?? '%'
 async function reload() {
   items.value = await useDb().repo(props.kind).getAll()
   stats.value = await useDb().repo('stats').getAll()
-  assigned.value = props.kind === 'equipment'
-    ? (await useDb().repo('equipmentAllocations').getAll()).map(x => x.equipmentId)
-    : (await useDb().repo('gemAllocations').getAll()).map(x => x.gemId)
+  const db = useDb()
+  const commanders: CommanderBuild[] = await db.repo('commanders').getAll()
+  const allocations = props.kind === 'equipment'
+    ? (await db.repo('equipmentAllocations').getAll()).map(a => ({ id:a.equipmentId, commanderId:a.commanderBuildId }))
+    : (await db.repo('gemAllocations').getAll()).map(a => ({ id:a.gemId, commanderId:a.commanderBuildId }))
+  assigned.value = allocations.map(a => a.id)
+  owners.value = Object.fromEntries(allocations.map(a => {
+    const c = commanders.find(c => c.id === a.commanderId)
+    return [a.id, c ? '司令官 ' + (commanderNumber(c, commanders) ?? '未設定') + '：' + c.name : '不明な司令官']
+  }))
 }
 onMounted(reload)
 watch(() => props.kind, reload)
@@ -60,7 +69,7 @@ async function remove(item: Equipment | Gem) {
         <div class="d-flex ga-2 flex-wrap align-center mb-3">
           <v-chip size="small" color="primary" variant="tonal">#{{ registrationNo(item.id) }}</v-chip><strong class="text-subtitle-1">{{ item.name }}</strong>
           <v-chip v-if="'slotType' in item" size="small">{{ SLOT_LABELS[item.slotType] }}</v-chip>
-          <v-chip v-if="assigned.includes(item.id)" color="warning" size="small">使用中</v-chip>
+          <v-chip v-if="assigned.includes(item.id)" color="warning" size="small">{{ owners[item.id] ?? '使用中' }}</v-chip>
           <v-chip v-else color="success" size="small" variant="tonal">未使用</v-chip>
         </div>
         <div v-for="(effect, i) in item.effects" :key="i" class="d-flex justify-space-between ga-3 py-1 border-b">

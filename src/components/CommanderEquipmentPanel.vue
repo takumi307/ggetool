@@ -66,7 +66,7 @@ function groupFor(id: string, name: string) {
 const grouped = computed(() => categories.map(c => ({
   title: c.title, rows: statRows.value.filter(row => groupFor(row.id, row.name) === c.title)
 })).filter(c => c.rows.length))
-const npcRanged = computed(() => statRows.value.find(r => r.id === 'S002')?.effective ?? 0 + 0)
+const npcRanged = computed(() => statRows.value.find(r => r.id === 'S002')?.effective ?? 0)
 const npcRangedTotal = computed(() => (statRows.value.find(r => r.id === 'S002')?.effective ?? 0) + (statRows.value.find(r => r.id === 'G005')?.effective ?? 0))
 const fmt = (n: number) => Number(n.toFixed(3)).toLocaleString('ja-JP')
 </script>

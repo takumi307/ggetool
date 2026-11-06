@@ -14,7 +14,17 @@ onMounted(reload)
 function fresh(): BuildPreset {
   return { id: crypto.randomUUID(), name: '', targets: [], priorityStats: [], maximizeStats: [], defaultCount: 1, priority: 1, description: '' }
 }
-function start(p?: BuildPreset) { editing.value = p ? JSON.parse(JSON.stringify(p)) as BuildPreset : fresh(); if (editing.value.name.includes('援軍特化') && !editing.value.requiredEquipmentKeyword) editing.value.requiredEquipmentKeyword = '援軍'; error.value = '' }
+function start(p?: BuildPreset) {
+  editing.value = p ? JSON.parse(JSON.stringify(p)) as BuildPreset : fresh()
+  if (editing.value.name.includes('援軍特化')) {
+    const supportStat = stats.value.find(s => s.name.includes('中庭攻撃時に受ける') && s.name.includes('乙女の援軍'))
+    if (supportStat && !editing.value.requiredEquipmentStatId) {
+      editing.value.requiredEquipmentStatId = supportStat.id
+      editing.value.requiredEquipmentKeyword = ''
+    }
+  }
+  error.value = ''
+}
 async function seed() {
   if (presets.value.length && !confirm('既存プリセットを残して、未登録の標準プリセットを追加しますか？')) return
   for (const d of defaults) {
@@ -33,8 +43,9 @@ async function save() {
   if (!p.name.trim() || !Number.isInteger(p.defaultCount) || p.defaultCount < 1) { error.value = '名前と作成個数（1以上の整数）を確認してください'; return }
   if (p.targets.some(t => !stats.value.some(s => s.id === t.statId) || !Number.isFinite(t.minValue) || t.minValue < 0) ||
       new Set(p.targets.map(t => t.statId)).size !== p.targets.length) { error.value = '目標の効果・数値・重複を確認してください'; return }
-  if (p.requiredEquipmentKeyword?.trim() && !equipment.value.some(e => e.name.includes(p.requiredEquipmentKeyword!.trim()))) { error.value = '必須装備の名前条件に一致する装備がありません。装備管理の名称を確認してください'; return }
-  p.requiredEquipmentKeyword = p.requiredEquipmentKeyword?.trim() ?? ''
+  if (p.requiredEquipmentStatId && !stats.value.some(s => s.id === p.requiredEquipmentStatId)) { error.value = '必須装備効果を選択してください'; return }
+  if (!p.requiredEquipmentStatId && p.requiredEquipmentKeyword?.trim() && !equipment.value.some(e => e.name.includes(p.requiredEquipmentKeyword!.trim()))) { error.value = '必須装備の名前条件に一致する装備がありません。装備管理の名称を確認してください'; return }
+  p.requiredEquipmentKeyword = p.requiredEquipmentStatId ? '' : (p.requiredEquipmentKeyword?.trim() ?? '')
   // Keep the legacy field for backup compatibility, but disable its behavior.
   p.maximizeStats = []
   p.priorityStats = []
@@ -57,7 +68,7 @@ async function remove(p: BuildPreset) {
   </div>
   <v-alert v-if="error && !editing" type="error" class="mb-3">{{ error }}</v-alert>
   <v-card v-for="p in presets" :key="p.id" class="pa-3 mb-2">
-    <strong>{{ p.name }}</strong><span v-if="p.requiredEquipmentKeyword" class="text-caption ml-2">必須装備：{{ p.requiredEquipmentKeyword }}</span>
+    <strong>{{ p.name }}</strong><span v-if="p.requiredEquipmentStatId" class="text-caption ml-2">必須装備効果：{{ stats.find(s => s.id === p.requiredEquipmentStatId)?.name ?? p.requiredEquipmentStatId }}</span><span v-if="p.requiredEquipmentKeyword" class="text-caption ml-2">必須装備：{{ p.requiredEquipmentKeyword }}</span>
     <p class="text-body-2">{{ p.targets.map(t => (stats.find(s => s.id === t.statId)?.name ?? t.statId) + ' ≥ ' + t.minValue).join(' / ') || '目標なし' }}</p>
     <v-btn size="small" variant="text" @click="start(p)">編集</v-btn>
     <v-btn size="small" variant="text" color="error" @click="remove(p)">削除</v-btn>
@@ -68,7 +79,9 @@ async function remove(p: BuildPreset) {
       <v-text-field v-model="editing.name" label="名前" />
       <v-text-field v-model.number="editing.defaultCount" type="number" min="1" label="標準作成数" />
       <v-textarea v-model="editing.description" rows="2" label="説明" />
-      <v-text-field v-model="editing.requiredEquipmentKeyword" label="必須装備名（部分一致・空欄なら指定なし）" hint="例：援軍。各司令官に、この文字を名前に含む装備を最低1個必須にします。装備は司令官間で重複使用しません。" persistent-hint class="mb-3" />
+      <v-select v-model="editing.requiredEquipmentStatId" :items="stats.filter(s => s.category === 'equipment').map(s => ({ title: s.name, value: s.id }))" label="必須装備効果（効果を持つ武具を最低1つ使用）" clearable hint="援軍特化型は「中庭攻撃時に受けるレベル10乙女の援軍」を選択。装備名ではなく効果で判定します。" persistent-hint class="mb-3" />
+      <v-alert v-if="editing.requiredEquipmentStatId" type="info" variant="tonal" class="mb-3">該当効果を持つ登録装備：{{ equipment.filter(e => e.effects.some(x => x.statId === editing!.requiredEquipmentStatId && x.value > 0)).length }}件</v-alert>
+      <v-text-field v-if="!editing.requiredEquipmentStatId" v-model="editing.requiredEquipmentKeyword" label="必須装備名（部分一致・空欄なら指定なし）" hint="例：援軍。各司令官に、この文字を名前に含む装備を最低1個必須にします。装備は司令官間で重複使用しません。" persistent-hint class="mb-3" />
       <v-alert v-if="editing.requiredEquipmentKeyword" type="info" variant="tonal" class="mb-3">一致する登録装備：{{ equipment.filter(e => e.name.includes(editing!.requiredEquipmentKeyword!.trim())).length }}件。6体作る場合は最低6個の未使用装備が必要です。</v-alert>
       <h4 class="mb-2">最低目標</h4>
       <v-row v-for="(t, i) in editing.targets" :key="i" dense>

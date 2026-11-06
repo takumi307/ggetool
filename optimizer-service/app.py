@@ -77,7 +77,7 @@ def health():
 @app.post("/optimize")
 def optimize(data: Request):
     if not data.jobs:
-        return {"status": "OPTIMAL", "optimal": True, "achieved": 0, "requested": 0, "builds": []}
+        return {"status": "OPTIMAL", "optimal": True, "achieved": 0, "upperBound": 0, "requested": 0, "builds": []}
     reserved_e = set(data.reservedEquipmentIds)
     reserved_g = set(data.reservedGemIds)
     eq = [e for e in data.equipment if e.id not in reserved_e]
@@ -160,9 +160,13 @@ def optimize(data: Request):
     solver.parameters.max_time_in_seconds = data.timeLimitSeconds
     solver.parameters.num_search_workers = 2
     status = solver.Solve(model)
+    # Integer objective: CP-SAT best bound is a certified upper bound on the
+    # maximum achievable count (not an estimate of the next feasible solution).
+    bound = min(n, max(0, math.floor(solver.BestObjectiveBound() + 1e-6)))
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return {"status": solver.StatusName(status), "optimal": False, "achieved": 0, "requested": n, "builds": []}
+        return {"status": solver.StatusName(status), "optimal": False, "achieved": 0, "upperBound": bound if status != cp_model.MODEL_INVALID else None, "requested": n, "builds": []}
     first_count = round(solver.Value(count))
+    bound = max(first_count, bound)
     best_solver = solver
     final_status = status
     # Only perform priority tie-break if the maximum count is proven.
@@ -206,6 +210,7 @@ def optimize(data: Request):
                          for key, cap in caps.items() if totals.get(key, 0) > cap]
         })
     return {"status": best_solver.StatusName(final_status),
+            "upperBound": bound,
             "optimal": status == cp_model.OPTIMAL and final_status == cp_model.OPTIMAL,
             "achieved": len(builds), "requested": n, "builds": builds}
 

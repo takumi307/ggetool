@@ -125,7 +125,7 @@ async function runPlans() {
       zeroDiagnostics.value = distinctPresets.flatMap(p => p.targets.map(t => {
         const id = canonicalStatId(t.statId)
         const equipmentMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableEq.filter(e => e.slotType === slot).map(e => effectSum(e.effects, id))), 0)
-        const gemMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableGems.filter(g => g.allowedSlots.includes(slot)).map(g => effectSum(g.effects, id))), 0)
+        const gemMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableGems.filter(g => g.allowedSlots.includes(slot)).map(g => effectSum(g.effects, id) + (p.name.includes('援軍特化') && id === 'S002' ? effectSum(g.effects, 'G005') : 0))), 0)
         const optimistic = Math.min(equipmentMax, capMap.get(id) ?? Infinity) + gemMax
         return { preset: p.name, stat: statName(t.statId), required: t.minValue, optimistic, impossible: optimistic + 1e-8 < t.minValue }
       }))

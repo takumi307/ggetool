@@ -43,6 +43,7 @@ class Stat(BaseModel):
     cap: float | None = None
 class Target(BaseModel):
     statId: str
+    npcBonusStatId: str | None = None
     minValue: float = Field(ge=0, le=100000)
 class Job(BaseModel):
     presetId: str
@@ -92,7 +93,7 @@ def optimize(data: Request):
     for g in gems:
         for slot in g.allowedSlots:
             gems_by_slot[slot].append(g)
-    relevant_stats = {t.statId for job in data.jobs for t in job.targets}
+    relevant_stats = {stat for job in data.jobs for t in job.targets for stat in (t.statId, t.npcBonusStatId) if stat}
     def effect_totals(item):
         result = {}
         for effect in item.effects:
@@ -140,7 +141,7 @@ def optimize(data: Request):
     previous_identical = {}
     for j, job in enumerate(data.jobs):
         signature = (job.presetId, job.priority,
-                     tuple(sorted((t.statId, scaled(t.minValue)) for t in job.targets)))
+                     tuple(sorted((t.statId, t.npcBonusStatId or '', scaled(t.minValue)) for t in job.targets)))
         if signature in previous_identical:
             model.Add(active[j] <= active[previous_identical[signature]])
         previous_identical[signature] = j
@@ -149,7 +150,7 @@ def optimize(data: Request):
         for target in job.targets:
             minimum = scaled(target.minValue)
             equipment_terms = equipment_stat_terms[j, target.statId]
-            gem_terms = gem_stat_terms[j, target.statId]
+            gem_terms = gem_stat_terms[j, target.statId] + (gem_stat_terms[j, target.npcBonusStatId] if target.npcBonusStatId else [])
             if target.statId in caps:
                 # Cap applies to equipment effects only. Gem bonuses are
                 # additive beyond that cap (e.g. 140% equipment + 20% gems).
@@ -210,7 +211,7 @@ def optimize(data: Request):
             "gemAssignments": assignments,
             "totals": {key: val / SCALE for key, val in totals.items()},
             "shortfalls": [{"statId": t.statId, "required": t.minValue,
-                            "actual": (min(sum(scaled(eff.value) for e in eq if e.id in chosen.values() for eff in e.effects if eff.statId == t.statId), caps[t.statId]) + sum(scaled(eff.value) for g in gems if g.id in gem_ids for eff in g.effects if eff.statId == t.statId)) / SCALE if t.statId in caps else totals.get(t.statId, 0) / SCALE,
+                            "actual": (min(sum(scaled(eff.value) for e in eq if e.id in chosen.values() for eff in e.effects if eff.statId == t.statId), caps[t.statId]) + sum(scaled(eff.value) for g in gems if g.id in gem_ids for eff in g.effects if eff.statId in (t.statId, t.npcBonusStatId) and eff.statId is not None)) / SCALE if t.statId in caps else totals.get(t.statId, 0) / SCALE,
                             "missing": 0} for t in job.targets],
             "overflow": [{"statId": key, "cap": cap / SCALE, "raw": totals[key] / SCALE}
                          for key, cap in caps.items() if totals.get(key, 0) > cap]

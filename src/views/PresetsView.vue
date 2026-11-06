@@ -5,7 +5,7 @@ import type { BuildPreset, StatDefinition } from '@/domain'
 const app = useAppStore()
 const presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([]), editing = ref<BuildPreset | null>(null), error = ref('')
 const defaults = [
-  { name: 'バランス型', targets: [], defaultCount: 30, description: '乱闘・遠隔の合計150%、ジェムのNPC補正は最大30%まで加算。中庭はNPC補正込みで80%を目指す。' },
+  { name: 'バランス型', targets: [['S002', 120], ['S001', 120], ['S003', 50]], defaultCount: 30, description: '暫定の最低条件。合計150%への接近とNPC補正を含む80%の最適化は未対応。' },
   { name: '略奪特化型', targets: [['S008', 50]], defaultCount: 3, description: '略奪量50%のみを最低条件とする' },
   { name: '援軍特化型', targets: [['S002', 120], ['S003', 50], ['S007', 90]], defaultCount: 1, description: '遠隔兵120%、中庭50%、移動速度90%' }
 ] as const

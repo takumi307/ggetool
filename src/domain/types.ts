@@ -96,6 +96,10 @@ export interface GemAssignment {
 }
 
 export interface CommanderBuild {
+  /** Game commander slot, 1–35. Legacy records without position are supported. */
+  position?: number
+  /** Exclude from reassignment, including full-roster optimization. */
+  locked?: boolean
   id: string
   name: string
   presetId: string

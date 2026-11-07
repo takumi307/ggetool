@@ -3,6 +3,7 @@
 Run with: uvicorn app:app --host 0.0.0.0 --port 8080
 No user data is persisted. Deploy behind authentication and rate limits.
 """
+from hashlib import sha256
 import math
 import os
 import time
@@ -61,6 +62,7 @@ class Job(BaseModel):
     previousEquipmentIds: dict[str, str] = Field(default_factory=dict)
     previousGemIds: dict[str, str] = Field(default_factory=dict)
 class Request(BaseModel):
+    requestId: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     castellan: bool = False
     equipment: list[Equipment] = Field(max_length=1500)
     gems: list[Gem] = Field(max_length=1500)
@@ -346,16 +348,22 @@ def _run_job(job_id: str, data: Request):
 
 @app.post("/jobs", status_code=202)
 def start_job(data: Request):
+    job_id = data.requestId or uuid.uuid4().hex
+    fingerprint = sha256(data.model_dump_json().encode()).digest() if data.requestId else None
     with _job_lock:
         _expire_jobs()
+        existing = _jobs.get(job_id)
+        if existing is not None:
+            if existing["fingerprint"] != fingerprint:
+                raise HTTPException(status_code=409, detail="同じ依頼IDに異なる計算データが送信されました。")
+            return {"jobId": job_id, "state": existing["state"], "castellan": data.castellan}
         # Free-tier instance: prevent unbounded CPU and memory queues.
         if any(job["state"] == "running" for job in _jobs.values()):
             raise HTTPException(status_code=429, detail="別の最適化を実行中です。完了後に再試行してください。")
         if len(_jobs) >= _MAX_JOBS:
             oldest = min(_jobs, key=lambda key: _jobs[key]["updated"])
             del _jobs[oldest]
-        job_id = uuid.uuid4().hex
-        _jobs[job_id] = {"state": "running", "updated": time.monotonic()}
+        _jobs[job_id] = {"state": "running", "updated": time.monotonic(), "fingerprint": fingerprint}
     _executor.submit(_run_job, job_id, data)
     return {"jobId": job_id, "state": "running", "castellan": data.castellan}
 

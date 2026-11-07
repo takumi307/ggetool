@@ -80,8 +80,9 @@ function balanceLordBuilds(input: CastellanPlanInput, builds: CpSatBuild[]) {
           if (!a || !b) continue
           const minimum = Math.min(scores[i], scores[j])
           const nextMinimum = Math.min(a.quality, b.quality)
-          const improves = nextMinimum > minimum + 1e-8 ||
-            (Math.abs(nextMinimum - minimum) <= 1e-8 && a.quality + b.quality > scores[i] + scores[j] + 1e-8)
+          // Concave per-effect scores reward sharing scarce bonuses across builds.
+          const gain = a.quality + b.quality - scores[i] - scores[j]
+          const improves = gain > 1e-8 || (Math.abs(gain) <= 1e-8 && nextMinimum > minimum + 1e-8)
           if (improves) {
             left.result = a.result
             right.result = b.result

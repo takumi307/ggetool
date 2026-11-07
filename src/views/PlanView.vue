@@ -4,8 +4,11 @@ import { useRouter } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import type { BuildPlan, BuildPreset, CommanderBuild } from '@/domain'
 
+const db = useDb()
+
 const router = useRouter()
 const app = useAppStore()
+const { roleLabel } = app
 const plans = ref<BuildPlan[]>([])
 const presets = ref<BuildPreset[]>([])
 const commanders = ref<CommanderBuild[]>([])
@@ -17,7 +20,6 @@ const count = ref(1)
 const priority = ref(1)
 
 async function reload() {
-  const db = useDb()
   ;[plans.value, presets.value, commanders.value] = await Promise.all([
     db.repo('plans').getAll(), db.repo('presets').getAll(), db.repo('commanders').getAll()
   ])
@@ -45,11 +47,11 @@ async function add() {
   }
   busy.value = true
   try {
-    await useDb().repo('plans').put({
+    await db.repo('plans').put({
       id: crypto.randomUUID(), presetId: selectedPresetId.value, count: count.value,
       priority: priority.value, enabled: true
     })
-    await reload(); await app.refreshCounts()
+    await reload(); await app.refreshCounts(db)
     notice.value = '計画を追加しました'
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
@@ -60,16 +62,16 @@ async function update(p: BuildPlan) {
   }
   busy.value = true
   try {
-    await useDb().repo('plans').put({ ...p })
+    await db.repo('plans').put({ ...p })
     await reload(); notice.value = '計画を保存しました'
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
 async function remove(p: BuildPlan) {
-  if (!confirm('「' + presetName(p.presetId) + '」の計画を削除しますか？保存済み司令官は削除されません。')) return
+  if (!confirm('「' + presetName(p.presetId) + '」の計画を削除しますか？保存済み' + roleLabel + 'は削除されません。')) return
   error.value = ''; notice.value = ''; busy.value = true
   try {
-    await useDb().repo('plans').delete(p.id)
-    await reload(); await app.refreshCounts()
+    await db.repo('plans').delete(p.id)
+    await reload(); await app.refreshCounts(db)
     notice.value = '計画を削除しました'
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
@@ -86,7 +88,7 @@ function optimize(p: BuildPlan) {
 <template>
   <h2 class="text-h6 mb-3">ビルド作成計画</h2>
   <v-alert type="info" variant="tonal" class="mb-4">
-    プリセットごとに必要な司令官数と優先順位を管理します。進捗は保存済み司令官の数から自動集計されます。
+    プリセットごとに必要な{{ roleLabel }}数と優先順位を管理します。進捗は保存済み{{ roleLabel }}の数から自動集計されます。
     計画を追加しても一括最適化は開始されません。
   </v-alert>
   <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>

@@ -1,8 +1,7 @@
-/**
- * The courtyard attack bonus on gems (G008) is the same in-game effect as
- * the equipment bonus (S003). Keep both persisted IDs for backup compatibility,
- * but aggregate them under the equipment stat ID for optimization and caps.
- */
+import { CASTELLAN_GEM_ALIASES } from './castellanStats'
+
+/** Aggregate matching equipment and gem effects while keeping their saved IDs. */
 export function canonicalStatId(id: string): string {
-  return id === 'G008' ? 'S003' : id
+  if (id === 'G008') return 'S003'
+  return CASTELLAN_GEM_ALIASES.get(id) ?? id
 }

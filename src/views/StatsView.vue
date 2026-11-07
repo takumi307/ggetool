@@ -3,6 +3,8 @@ import { onMounted, ref } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
 import type { StatDefinition, StatCategory, CapStatus } from '@/domain'
 import { validateStat } from '@/domain/validation'
+
+const db = useDb()
 const app = useAppStore()
 const items = ref<StatDefinition[]>([]), error = ref(''), editing = ref<StatDefinition | null>(null)
 const categories: { title: string, value: StatCategory }[] = [
@@ -11,7 +13,7 @@ const categories: { title: string, value: StatCategory }[] = [
 const statuses: { title: string, value: CapStatus }[] = [
   { title: '確認済み', value: 'known' }, { title: '未確認', value: 'unknown' }, { title: '無効', value: 'disabled' }
 ]
-async function reload() { items.value = await useDb().repo('stats').getAll() }
+async function reload() { items.value = await db.repo('stats').getAll() }
 onMounted(reload)
 function start(s?: StatDefinition) {
   editing.value = s ? { ...s } : {
@@ -31,16 +33,16 @@ async function save() {
   const issue = validateStat(stat)
   if (issue) { error.value = issue; return }
   try {
-    await useDb().repo('stats').put(stat)
+    await db.repo('stats').put(stat)
     editing.value = null
     await reload()
-    await app.refreshCounts()
+    await app.refreshCounts(db)
   } catch (e) { error.value = String(e) }
 }
 async function remove(s: StatDefinition) {
   error.value = ''
   const [eq, gems, presets] = await Promise.all([
-    useDb().repo('equipment').getAll(), useDb().repo('gems').getAll(), useDb().repo('presets').getAll()
+    db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('presets').getAll()
   ])
   if (eq.some(x => x.effects.some(e => e.statId === s.id)) ||
       gems.some(x => x.effects.some(e => e.statId === s.id)) ||
@@ -49,7 +51,7 @@ async function remove(s: StatDefinition) {
     return
   }
   if (!confirm('「' + s.name + '」を削除しますか？')) return
-  try { await useDb().repo('stats').delete(s.id); await reload(); await app.refreshCounts() }
+  try { await db.repo('stats').delete(s.id); await reload(); await app.refreshCounts(db) }
   catch (e) { error.value = String(e) }
 }
 </script>

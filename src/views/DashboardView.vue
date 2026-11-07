@@ -3,7 +3,7 @@ import { useAppStore } from '@/stores/app'
 const app = useAppStore()
 const rows = [
   ['equipment', '装備'], ['gems', 'ジェム'], ['stats', 'ステータス定義'],
-  ['presets', 'ビルドプリセット'], ['plans', '作成計画'], ['commanders', '保存済み司令官'],
+  ['presets', 'ビルドプリセット'], ['plans', '作成計画'], ['commanders', '保存済み' + app.roleLabel],
 ] as const
 </script>
 

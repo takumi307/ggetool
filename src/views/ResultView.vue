@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useDb } from '@/stores/app'
+import { useDb, useAppStore } from '@/stores/app'
 import CommanderEquipmentPanel from '@/components/CommanderEquipmentPanel.vue'
 import { type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
+
+const db = useDb()
+const { roleLabel } = useAppStore()
 
 const route = useRoute(), router = useRouter()
 const builds = ref<CommanderBuild[]>([])
@@ -43,7 +46,6 @@ const targetRows = computed(() => (preset.value?.targets ?? []).map(t => {
 }))
 onMounted(async () => {
   try {
-    const db = useDb()
     ;[builds.value, equipment.value, gems.value, presets.value, stats.value] = await Promise.all([
       db.repo('commanders').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(),
       db.repo('presets').getAll(), db.repo('stats').getAll()
@@ -59,19 +61,19 @@ function showCommanderList() { router.push('/commanders') }
   <h2 class="text-h6 mb-3">最適化結果</h2>
   <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
   <v-alert v-if="!builds.length" type="info" variant="tonal" class="mb-4">
-    保存済みの結果はありません。最適化を実行し、司令官名を付けて保存するとここに表示されます。
+    保存済みの結果はありません。最適化を実行し、{{ roleLabel }}名を付けて保存するとここに表示されます。
   </v-alert>
   <v-btn v-if="!builds.length" color="primary" to="/optimize">最適化を実行する</v-btn>
   <template v-if="builds.length">
-    <v-select v-model="selectedId" :items="builds.map(b => ({ title: b.name, value: b.id }))" label="表示する司令官" />
+    <v-select v-model="selectedId" :items="builds.map(b => ({ title: b.name, value: b.id }))" :label="'表示する' + roleLabel" />
     <template v-if="selected">
       <v-card class="pa-4 mb-3">
-        <h3 class="text-subtitle-1 font-weight-bold mb-2">司令官の比較</h3>
+        <h3 class="text-subtitle-1 font-weight-bold mb-2">{{ roleLabel }}の比較</h3>
         <v-select v-model="compareId"
           :items="[{ title: '比較しない', value: '' }, ...builds.filter(b => b.id !== selectedId).map(b => ({ title: b.name, value: b.id }))]"
-          label="比較する司令官" density="comfortable" hide-details />
+          :label="'比較する' + roleLabel" density="comfortable" hide-details />
         <template v-if="comparison">
-          <p class="text-caption mt-3 mb-2">差分は「表示中の司令官 − 比較対象」です。既知の上限を適用した数値で比較します。</p>
+          <p class="text-caption mt-3 mb-2">差分は「表示中の{{ roleLabel }} − 比較対象」です。既知の上限を適用した数値で比較します。</p>
           <div class="d-flex justify-space-between text-caption font-weight-bold py-2">
             <span>効果</span><span>現在 / 比較対象 / 差分</span>
           </div>
@@ -113,7 +115,7 @@ function showCommanderList() { router.push('/commanders') }
       </v-card>
       <div class="d-flex ga-2 flex-wrap">
         <v-btn color="primary" to="/optimize">もう一度最適化</v-btn>
-        <v-btn variant="outlined" @click="showCommanderList">司令官一覧へ</v-btn>
+        <v-btn variant="outlined" @click="showCommanderList">{{ roleLabel }}一覧へ</v-btn>
       </div>
     </template>
   </template>

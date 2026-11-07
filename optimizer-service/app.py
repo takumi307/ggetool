@@ -45,6 +45,11 @@ class Target(BaseModel):
     statId: str
     npcBonusStatId: str | None = None
     minValue: float = Field(ge=0, le=100000)
+class ScoringStat(BaseModel):
+    id: str
+    scale: float = Field(gt=0, le=100000000)
+    weight: int = Field(ge=1, le=5)
+
 class Job(BaseModel):
     requiredEquipmentIds: list[str] = Field(default_factory=list)
     requireEquipment: bool = False
@@ -52,9 +57,11 @@ class Job(BaseModel):
     ordinal: int = Field(ge=1)
     priority: int = Field(ge=1)
     targets: list[Target]
+    scoring: list[ScoringStat] = Field(default_factory=list, max_length=300)
     previousEquipmentIds: dict[str, str] = Field(default_factory=dict)
     previousGemIds: dict[str, str] = Field(default_factory=dict)
 class Request(BaseModel):
+    castellan: bool = False
     equipment: list[Equipment] = Field(max_length=1500)
     gems: list[Gem] = Field(max_length=1500)
     stats: list[Stat] = Field(max_length=300)
@@ -78,7 +85,7 @@ origins = [s.strip() for s in os.getenv("CORS_ORIGINS", "").split(",") if s.stri
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["POST", "GET"], allow_headers=["Content-Type"])
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "castellan": True}
 
 @app.post("/optimize")
 def optimize(data: Request):
@@ -99,6 +106,8 @@ def optimize(data: Request):
         for slot in g.allowedSlots:
             gems_by_slot[slot].append(g)
     relevant_stats = {stat for job in data.jobs for t in job.targets for stat in (t.statId, t.npcBonusStatId) if stat}
+    if data.castellan:
+        relevant_stats.update(stat.id for job in data.jobs for stat in job.scoring)
     def effect_totals(item):
         result = {}
         for effect in item.effects:
@@ -149,6 +158,7 @@ def optimize(data: Request):
                      tuple(sorted(job.requiredEquipmentIds)),
                      tuple(sorted(job.previousEquipmentIds.items())),
                      tuple(sorted(job.previousGemIds.items())),
+                     tuple(sorted((s.id, s.scale, s.weight) for s in job.scoring)),
                      tuple(sorted((t.statId, t.npcBonusStatId or '', scaled(t.minValue)) for t in job.targets)))
         if signature in previous_identical:
             model.Add(active[j] <= active[previous_identical[signature]])
@@ -159,22 +169,46 @@ def optimize(data: Request):
             allowed = set(job.requiredEquipmentIds)
             model.Add(sum(var for (job_idx, slot, eid), var in x.items()
                           if job_idx == j and eid in allowed) >= active[j])
-    # Each minimum target is a linear sum of equipment and gem contributions.
-    for j, job in enumerate(data.jobs):
-        for target in job.targets:
-            minimum = scaled(target.minValue)
-            equipment_terms = equipment_stat_terms[j, target.statId]
-            gem_terms = gem_stat_terms[j, target.statId] + (gem_stat_terms[j, target.npcBonusStatId] if target.npcBonusStatId else [])
-            if target.statId in caps:
-                # Cap applies to equipment effects only. Gem bonuses are
-                # additive beyond that cap (e.g. 140% equipment + 20% gems).
-                capped_equipment = model.NewIntVar(0, caps[target.statId], f"capped_eq_{j}_{target.statId}")
-                raw_equipment = sum(equipment_terms)
-                model.AddMinEquality(capped_equipment, [raw_equipment, caps[target.statId]])
-                model.Add(capped_equipment + sum(gem_terms) >= minimum * active[j])
+    def capped(raw, cap, name):
+        if cap is None:
+            return raw
+        value = model.NewIntVar(0, cap, name)
+        model.AddMinEquality(value, [raw, cap])
+        return value
+
+    effective = {}
+
+    def effective_stat(j, stat):
+        key = (j, stat)
+        if key not in effective:
+            raw_equipment = sum(equipment_stat_terms[key])
+            raw_gems = sum(gem_stat_terms[key])
+            cap = caps.get(stat)
+            if data.castellan and stat == "C003":
+                value = capped(raw_equipment + raw_gems, cap, f"courtyard_{j}")
             else:
-                model.Add(sum(equipment_terms) + sum(gem_terms) >= minimum * active[j])
-    # Lexicographic objective: number of successful builds first, priority second.
+                gem_cap = None
+                if data.castellan:
+                    if stat == "C007":
+                        gem_cap = caps.get("CG007")
+                    elif stat.startswith(("CNG", "CPG")):
+                        gem_cap = cap
+                value = (capped(raw_equipment, cap, f"capped_eq_{j}_{stat}") +
+                         capped(raw_gems, gem_cap, f"capped_gem_{j}_{stat}"))
+            effective[key] = value
+        return effective[key]
+
+    target_values = {}
+    for j, job in enumerate(data.jobs):
+        for index, target in enumerate(job.targets):
+            value = effective_stat(j, target.statId)
+            if target.npcBonusStatId:
+                value += sum(gem_stat_terms[j, target.npcBonusStatId])
+            target_values[j, index] = value
+            model.Add(value >= scaled(target.minValue) * active[j])
+
+    # Count, then plan priority, then the quality of non-target effects.
+    # Build quality terms only after the earlier stages find usable solutions.
     count = sum(active)
     if data.maxAchieved is not None:
         model.Add(count <= data.maxAchieved)
@@ -217,7 +251,8 @@ def optimize(data: Request):
                         var = y.get((j, slot, gid))
                         if var is not None:
                             retained.append(var)
-        model.Maximize((8 * n + 1) * sum(weights[j] * active[j] for j in range(n)) + sum(retained))
+        priority = sum(weights[j] * active[j] for j in range(n))
+        model.Maximize(priority if data.castellan else (8 * n + 1) * priority + sum(retained))
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds
         second.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
@@ -225,6 +260,34 @@ def optimize(data: Request):
         final_status = cp_model.OPTIMAL if second_status == cp_model.OPTIMAL else cp_model.FEASIBLE
         if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             best_solver = second
+            if data.castellan and first_count and any(job.scoring for job in data.jobs):
+                model.Add(priority == second.Value(priority))
+                maxima = {stat: len(SLOTS) * (
+                    max((e.get(stat, 0) for e in equipment_effects.values()), default=0) +
+                    max((g.get(stat, 0) for g in gem_effects.values()), default=0)
+                ) for stat in relevant_stats}
+                quality = []
+                for j, job in enumerate(data.jobs):
+                    for stat in job.scoring:
+                        maximum = maxima[stat.id]
+                        if not maximum:
+                            continue
+                        denominator = max(1, round(stat.scale * SCALE))
+                        value = model.NewIntVar(0, maximum, f"score_value_{j}_{stat.id}")
+                        model.Add(value == effective_stat(j, stat.id))
+                        points = model.NewIntVar(0, maximum * SCALE // denominator, f"score_{j}_{stat.id}")
+                        model.AddDivisionEquality(points, value * SCALE, denominator)
+                        quality.append(stat.weight * points)
+                if quality:
+                    model.Maximize(sum(quality))
+                    third = cp_model.CpSolver()
+                    third.parameters.max_time_in_seconds = second.parameters.max_time_in_seconds
+                    third.parameters.num_search_workers = second.parameters.num_search_workers
+                    third_status = third.Solve(model)
+                    if third_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                        best_solver = third
+                    if third_status != cp_model.OPTIMAL:
+                        final_status = cp_model.FEASIBLE
     builds = []
     for j, job in enumerate(data.jobs):
         if not best_solver.Value(active[j]):
@@ -247,8 +310,8 @@ def optimize(data: Request):
             "gemAssignments": assignments,
             "totals": {key: val / SCALE for key, val in totals.items()},
             "shortfalls": [{"statId": t.statId, "required": t.minValue,
-                            "actual": (min(sum(scaled(eff.value) for e in eq if e.id in chosen.values() for eff in e.effects if eff.statId == t.statId), caps[t.statId]) + sum(scaled(eff.value) for g in gems if g.id in gem_ids for eff in g.effects if eff.statId in (t.statId, t.npcBonusStatId) and eff.statId is not None)) / SCALE if t.statId in caps else totals.get(t.statId, 0) / SCALE,
-                            "missing": 0} for t in job.targets],
+                            "actual": best_solver.Value(target_values[j, index]) / SCALE,
+                            "missing": 0} for index, t in enumerate(job.targets)],
             "overflow": [{"statId": key, "cap": cap / SCALE, "raw": totals[key] / SCALE}
                          for key, cap in caps.items() if totals.get(key, 0) > cap]
         })

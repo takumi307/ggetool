@@ -1,5 +1,5 @@
 import { canonicalStatId } from './statAliases'
-import { addEffects, knownCaps, npcBonusId, requiredEquipmentMatcher, targetActual, type Totals } from './effects'
+import { addEffects, castellanScoringScales, castellanScoringStats, knownCaps, npcBonusId, requiredEquipmentMatcher, targetActual, type Totals } from './effects'
 import type { BuildPreset, Equipment, Gem, SlotType, StatDefinition } from './types'
 import type { OptimizationResult } from './optimizer'
 
@@ -40,6 +40,7 @@ export async function optimizeCpSat(input: {
   reservedEquipmentIds: string[]
   reservedGemIds: string[]
   timeLimitSeconds: number
+  castellan?: boolean
   maxAchieved?: number
   signal?: AbortSignal
   endpoint?: string
@@ -47,6 +48,13 @@ export async function optimizeCpSat(input: {
 }): Promise<CpSatOutcome> {
   const endpoint = input.endpoint ?? cpSatEndpoint
   if (!endpoint) throw new Error('CP-SAT APIが未設定です。VITE_OPTIMIZER_API_URLを設定してください。')
+  if (input.castellan) {
+    const health = await fetch(endpoint + '/health', { signal: input.signal })
+    if (!health.ok || (await health.json()).castellan !== true) {
+      throw new Error('この計算サーバーは城代に未対応です。最新版に更新するか、実行先にブラウザを選択してください。')
+    }
+  }
+  const scales = input.castellan ? castellanScoringScales(input.stats, [...input.equipment, ...input.gems]) : new Map<string, number>()
   // Submit once, then poll short requests; a 5-minute solve must not depend
   // on keeping a single browser/Cloudflare/Render connection open.
   const response = await fetch(endpoint + '/jobs', {
@@ -54,11 +62,13 @@ export async function optimizeCpSat(input: {
     headers: { 'Content-Type': 'application/json' },
     signal: input.signal,
     body: JSON.stringify({
+      castellan: input.castellan,
       equipment: input.equipment,
       gems: input.gems.map(g => ({ ...g, effects: g.effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })) })),
       stats: input.stats,
       jobs: input.jobs.map(j => ({
         presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
+        scoring: input.castellan ? castellanScoringStats({ ...j.preset, castellanObjective: j.preset.castellanObjective ?? 'general' }, scales) : undefined,
         previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
         requireEquipment: Boolean(requiredEquipmentMatcher(j.preset)),
         requiredEquipmentIds: (() => { const match = requiredEquipmentMatcher(j.preset); return match ? input.equipment.filter(match).map(e => e.id) : [] })(),
@@ -73,7 +83,8 @@ export async function optimizeCpSat(input: {
   if (!response.ok) throw new Error('CP-SATジョブ開始エラー: HTTP ' + response.status)
   const started = await response.json() as { jobId: string }
   if (!/^[a-f0-9]{32}$/.test(started.jobId)) throw new Error('不正なジョブIDです')
-  const deadline = Date.now() + input.timeLimitSeconds * 2000 + 120000
+  const waitMs = input.timeLimitSeconds * (input.castellan ? 3000 : 2000) + 120000
+  const deadline = Date.now() + waitMs
   let data: ServerResponse | undefined
   while (Date.now() < deadline) {
     await new Promise<void>((resolve, reject) => {
@@ -88,7 +99,7 @@ export async function optimizeCpSat(input: {
     const state = await poll.json() as { state: string; result?: ServerResponse; error?: string }
     if (state.state === 'failed') throw new Error('CP-SAT計算エラー: ' + (state.error ?? '不明'))
     if (state.state === 'completed') { data = state.result; break }
-    input.onProgress?.('CP-SAT計算中… 経過 ' + Math.round((input.timeLimitSeconds * 2000 + 120000 - (deadline - Date.now())) / 1000) + '秒')
+    input.onProgress?.('CP-SAT計算中… 経過 ' + Math.round((waitMs - (deadline - Date.now())) / 1000) + '秒')
   }
   if (!data) throw new Error('計算待ちが制限時間を超えました。Renderのログを確認してください。')
   if (!Array.isArray(data.builds)) throw new Error('CP-SAT APIから不正な応答が返されました')

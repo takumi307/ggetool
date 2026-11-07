@@ -3,412 +3,54 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('playwright')
+const slots = ['helmet', 'weapon', 'armor', 'artifact']
+const at = '2026-11-07T00:00:00Z'
+const makeStat = (id, category) => ({ id, name: id, category, cap: null, unit: '%', capStatus: 'unknown', description: '' })
+const makeGear = (owner, slot, power) => ({
+  id: owner + '-' + slot, name: owner + '-' + slot, slotType: slot,
+  effects: [
+    { statId: 'test-power', value: power },
+    { statId: 'test-other-a', value: 0 },
+    { statId: 'test-other-b', value: 0 },
+  ],
+  memo: '', createdAt: at, updatedAt: at,
+})
+const commanders = ['locked', 'unlocked-a', 'unlocked-b'].map((id, index) => ({
+  id, position: index + 1, locked: index === 0, name: '検証-' + id,
+  presetId: 'test-preset',
+  equipmentIds: Object.fromEntries(slots.map(slot => [slot, id + '-' + slot])),
+  gemAssignments: [{ slotType: 'weapon', gemId: id + '-gem' }],
+  calculatedStats: {}, createdAt: at,
+}))
 const fixture = {
-  "schemaVersion": 1,
-  "exportedAt": "2026-11-07T00:00:00Z",
-  "stores": {
-    "equipment": [
-      {
-        "id": "locked-helmet",
-        "name": "locked-helmet",
-        "slotType": "helmet",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 80
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "locked-weapon",
-        "name": "locked-weapon",
-        "slotType": "weapon",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 0
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "locked-armor",
-        "name": "locked-armor",
-        "slotType": "armor",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 0
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "locked-artifact",
-        "name": "locked-artifact",
-        "slotType": "artifact",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 0
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "unlocked-helmet",
-        "name": "unlocked-helmet",
-        "slotType": "helmet",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 5
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "unlocked-weapon",
-        "name": "unlocked-weapon",
-        "slotType": "weapon",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 0
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "unlocked-armor",
-        "name": "unlocked-armor",
-        "slotType": "armor",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 0
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "unlocked-artifact",
-        "name": "unlocked-artifact",
-        "slotType": "artifact",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 0
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "upgrade-helmet",
-        "name": "upgrade-helmet",
-        "slotType": "helmet",
-        "effects": [
-          {
-            "statId": "test-power",
-            "value": 30
-          },
-          {
-            "statId": "test-other-a",
-            "value": 0
-          },
-          {
-            "statId": "test-other-b",
-            "value": 0
-          }
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      }
+  schemaVersion: 1,
+  exportedAt: at,
+  stores: {
+    equipment: [
+      ...commanders.flatMap(c => slots.map(slot => makeGear(c.id, slot, slot === 'helmet' ? (c.locked ? 80 : 5) : 0))),
+      makeGear('upgrade-a', 'helmet', 30),
+      makeGear('upgrade-b', 'helmet', 40),
     ],
-    "gems": [
-      {
-        "id": "locked-gem",
-        "name": "locked-gem",
-        "effects": [
-          {
-            "statId": "test-gem",
-            "value": 1
-          }
-        ],
-        "allowedSlots": [
-          "helmet",
-          "weapon"
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "unlocked-gem",
-        "name": "unlocked-gem",
-        "effects": [
-          {
-            "statId": "test-gem",
-            "value": 1
-          }
-        ],
-        "allowedSlots": [
-          "helmet",
-          "weapon"
-        ],
-        "memo": "",
-        "createdAt": "2026-11-07T00:00:00Z",
-        "updatedAt": "2026-11-07T00:00:00Z"
-      }
+    gems: commanders.map(c => ({
+      id: c.id + '-gem', name: c.id + '-gem', effects: [{ statId: 'test-gem', value: 1 }],
+      allowedSlots: ['helmet', 'weapon'], memo: '', createdAt: at, updatedAt: at,
+    })),
+    stats: [
+      ...['test-power', 'test-other-a', 'test-other-b'].map(id => makeStat(id, 'equipment')),
+      makeStat('test-gem', 'gem'),
     ],
-    "stats": [
-      {
-        "id": "test-power",
-        "name": "test-power",
-        "category": "equipment",
-        "cap": null,
-        "unit": "%",
-        "capStatus": "unknown",
-        "description": ""
-      },
-      {
-        "id": "test-other-a",
-        "name": "test-other-a",
-        "category": "equipment",
-        "cap": null,
-        "unit": "%",
-        "capStatus": "unknown",
-        "description": ""
-      },
-      {
-        "id": "test-other-b",
-        "name": "test-other-b",
-        "category": "equipment",
-        "cap": null,
-        "unit": "%",
-        "capStatus": "unknown",
-        "description": ""
-      },
-      {
-        "id": "test-gem",
-        "name": "test-gem",
-        "category": "gem",
-        "cap": null,
-        "unit": "%",
-        "capStatus": "unknown",
-        "description": ""
-      }
-    ],
-    "presets": [
-      {
-        "id": "test-preset",
-        "name": "検証プリセット",
-        "targets": [
-          {
-            "statId": "test-power",
-            "minValue": 25
-          }
-        ],
-        "priorityStats": [],
-        "maximizeStats": [],
-        "defaultCount": 2,
-        "priority": 1,
-        "description": ""
-      }
-    ],
-    "plans": [],
-    "commanders": [
-      {
-        "id": "locked",
-        "position": 1,
-        "locked": true,
-        "name": "検証-locked",
-        "presetId": "test-preset",
-        "equipmentIds": {
-          "helmet": "locked-helmet",
-          "weapon": "locked-weapon",
-          "armor": "locked-armor",
-          "artifact": "locked-artifact"
-        },
-        "gemAssignments": [
-          {
-            "slotType": "weapon",
-            "gemId": "locked-gem"
-          }
-        ],
-        "calculatedStats": {},
-        "createdAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "id": "unlocked",
-        "position": 2,
-        "locked": false,
-        "name": "検証-unlocked",
-        "presetId": "test-preset",
-        "equipmentIds": {
-          "helmet": "unlocked-helmet",
-          "weapon": "unlocked-weapon",
-          "armor": "unlocked-armor",
-          "artifact": "unlocked-artifact"
-        },
-        "gemAssignments": [
-          {
-            "slotType": "weapon",
-            "gemId": "unlocked-gem"
-          }
-        ],
-        "calculatedStats": {},
-        "createdAt": "2026-11-07T00:00:00Z"
-      }
-    ],
-    "equipmentAllocations": [
-      {
-        "slotType": "helmet",
-        "equipmentId": "locked-helmet",
-        "commanderBuildId": "locked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "weapon",
-        "equipmentId": "locked-weapon",
-        "commanderBuildId": "locked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "armor",
-        "equipmentId": "locked-armor",
-        "commanderBuildId": "locked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "artifact",
-        "equipmentId": "locked-artifact",
-        "commanderBuildId": "locked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "helmet",
-        "equipmentId": "unlocked-helmet",
-        "commanderBuildId": "unlocked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "weapon",
-        "equipmentId": "unlocked-weapon",
-        "commanderBuildId": "unlocked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "armor",
-        "equipmentId": "unlocked-armor",
-        "commanderBuildId": "unlocked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "artifact",
-        "equipmentId": "unlocked-artifact",
-        "commanderBuildId": "unlocked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      }
-    ],
-    "gemAllocations": [
-      {
-        "slotType": "weapon",
-        "gemId": "locked-gem",
-        "commanderBuildId": "locked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      },
-      {
-        "slotType": "weapon",
-        "gemId": "unlocked-gem",
-        "commanderBuildId": "unlocked",
-        "allocatedAt": "2026-11-07T00:00:00Z"
-      }
-    ],
-    "settings": []
-  }
+    presets: [{
+      id: 'test-preset', name: '検証プリセット', targets: [{ statId: 'test-power', minValue: 25 }],
+      priorityStats: [], maximizeStats: [], defaultCount: 3, priority: 1, description: '',
+    }],
+    plans: [],
+    commanders,
+    equipmentAllocations: commanders.flatMap(c => slots.map(slotType => ({
+      slotType, equipmentId: c.equipmentIds[slotType], commanderBuildId: c.id, allocatedAt: at,
+    }))),
+    gemAllocations: commanders.map(c => ({ ...c.gemAssignments[0], commanderBuildId: c.id, allocatedAt: at })),
+    settings: [],
+  },
 }
 const browser = await chromium.launch()
 try {
@@ -435,24 +77,32 @@ try {
   await select('最適化モード').click()
   await option('指定司令官を再最適化').click()
   await select('再最適化する司令官（複数選択）').click()
-  await visible(option('司令官 2：検証-unlocked'))
+  await visible(option('司令官 2：検証-unlocked-a'))
+  await visible(option('司令官 3：検証-unlocked-b'))
   assert.equal(await option('司令官 1：検証-locked').count(), 0)
   await select('再最適化する司令官（複数選択）').press('Escape')
   await select('最適化モード').click()
   await option('司令官全体を再最適化（ロック中は除外）').click()
   await button('CP-SATで再最適化').click()
-  await visible(link('CP-SAT最適化結果（1体）'))
-  await visible(page.getByText('現在の構成から変更する装備・ジェム：1箇所。', { exact: false }))
-  await button('全1体を安全に一括更新').click()
-  await visible(page.getByText('1体を一括更新しました', { exact: false }))
+  await visible(link('CP-SAT最適化結果（2体）'))
+  await visible(page.getByText('現在の構成から変更する装備・ジェム：2箇所。', { exact: false }))
+  await button('全2体を安全に一括更新').click()
+  await visible(page.getByText('2体を一括更新しました', { exact: false }))
 
   await link('保存済み司令官を確認').click()
   await page.reload()
   await visible(card('検証-locked').getByText('ロック中', { exact: true }))
   await visible(card('検証-locked').getByText(/兜：locked-helmet/))
   await visible(card('検証-locked').getByText(/ジェム：locked-gem/))
-  await visible(card('検証-unlocked').getByText(/兜：upgrade-helmet/))
-  await visible(card('検証-unlocked').getByText(/ジェム：unlocked-gem/))
+  const helmets = []
+  for (const id of ['unlocked-a', 'unlocked-b']) {
+    const commander = card('検証-' + id)
+    const helmet = commander.getByText(/兜：upgrade-[ab]-helmet/)
+    await visible(helmet)
+    helmets.push((await helmet.innerText()).match(/upgrade-[ab]-helmet/)[0])
+    await visible(commander.getByText('ジェム：' + id + '-gem', { exact: false }))
+  }
+  assert.deepEqual(helmets.sort(), ['upgrade-a-helmet', 'upgrade-b-helmet'])
   console.log('Browser reoptimization, atomic save, and persistence verified')
 } finally {
   await browser.close()

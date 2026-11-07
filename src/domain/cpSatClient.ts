@@ -58,41 +58,47 @@ export async function optimizeCpSat(input: {
     input.signal?.addEventListener('abort', abort, { once: true })
   })
   const scales = input.castellan ? castellanScoringScales(input.stats, [...input.equipment, ...input.gems]) : new Map<string, number>()
-  // Submit once, then poll short requests; a 5-minute solve must not depend
-  // on keeping a single browser/Cloudflare/Render connection open.
-  input.onProgress?.('計算データをサーバーへ送信中…')
-  const response = await fetch(endpoint + '/jobs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal: input.signal,
-    body: JSON.stringify({
-      castellan: input.castellan,
-      equipment: input.equipment.map(({ id, slotType, effects }) => ({ id, slotType, effects })),
-      gems: input.gems.map(({ id, allowedSlots, effects }) => ({
-        id, allowedSlots, effects: effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })),
-      })),
-      stats: input.stats.map(({ id, cap, capStatus }) => ({ id, cap, capStatus })),
-      jobs: input.jobs.map(j => ({
-        presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
-        scoring: input.castellan ? castellanScoringStats({ ...j.preset, castellanObjective: j.preset.castellanObjective ?? 'general' }, scales) : undefined,
-        previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
-        requireEquipment: Boolean(requiredEquipmentMatcher(j.preset)),
-        requiredEquipmentIds: (() => { const match = requiredEquipmentMatcher(j.preset); return match ? input.equipment.filter(match).map(e => e.id) : [] })(),
-        targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
-      })),
-      reservedEquipmentIds: input.reservedEquipmentIds,
-      reservedGemIds: input.reservedGemIds,
-      maxAchieved: input.maxAchieved,
-      timeLimitSeconds: input.timeLimitSeconds
-    })
-  }).catch(error => {
-    if (input.signal?.aborted) throw error
-    throw new Error(input.local
-      ? 'このPCの計算サーバーに接続できません。サーバーの起動とブラウザのローカルネットワーク許可を確認してください。'
-      : 'Renderへの送信中に接続が途切れました。少し待ってから再実行してください。')
+  // Cloud retries reuse the same ID so a lost response cannot start another calculation.
+  const requestId = endpoint === '/api/optimizer' ? crypto.randomUUID().replace(/-/g, '') : undefined
+  const body = JSON.stringify({
+    requestId,
+    castellan: input.castellan,
+    equipment: input.equipment.map(({ id, slotType, effects }) => ({ id, slotType, effects })),
+    gems: input.gems.map(({ id, allowedSlots, effects }) => ({
+      id, allowedSlots, effects: effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })),
+    })),
+    stats: input.stats.map(({ id, cap, capStatus }) => ({ id, cap, capStatus })),
+    jobs: input.jobs.map(j => ({
+      presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
+      scoring: input.castellan ? castellanScoringStats({ ...j.preset, castellanObjective: j.preset.castellanObjective ?? 'general' }, scales) : undefined,
+      previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
+      requireEquipment: Boolean(requiredEquipmentMatcher(j.preset)),
+      requiredEquipmentIds: (() => { const match = requiredEquipmentMatcher(j.preset); return match ? input.equipment.filter(match).map(e => e.id) : [] })(),
+      targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
+    })),
+    reservedEquipmentIds: input.reservedEquipmentIds,
+    reservedGemIds: input.reservedGemIds,
+    maxAchieved: input.maxAchieved,
+    timeLimitSeconds: input.timeLimitSeconds
   })
+  const transient = (status: number) => [502, 503, 504, 522, 524].includes(status)
+  let response: Response | undefined
+  for (let attempt = 1; attempt <= (requestId ? 3 : 1); attempt++) {
+    input.onProgress?.(attempt === 1 ? '計算データをサーバーへ送信中…' : `Renderの応答を待って再送信中（${attempt}/3）…`)
+    response = await fetch(endpoint + '/jobs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: input.signal, body,
+    }).catch(error => {
+      if (input.signal?.aborted) throw error
+      return undefined
+    })
+    if (response && !transient(response.status)) break
+    if (requestId && attempt < 3) await wait(2000)
+  }
+  if (!response) throw new Error(input.local
+    ? 'このPCの計算サーバーに接続できません。サーバーの起動とブラウザのローカルネットワーク許可を確認してください。'
+    : 'Renderへの送信中に接続が途切れました。少し待ってから再実行してください。')
   if (response.status === 429) throw new Error('計算サーバーが別の計算を実行中です。完了後に再実行してください。')
-  if ([502, 503, 504].includes(response.status)) throw new Error('Renderの計算サーバーに接続できません（HTTP ' + response.status + '）。少し待って再実行してください。')
+  if (transient(response.status)) throw new Error('計算サーバーの応答を受け取れませんでした（HTTP ' + response.status + '）。少し待って再実行してください。')
   if (!response.ok) throw new Error('計算を開始できません（HTTP ' + response.status + '）。')
   const started = await response.json() as { jobId: string; castellan?: boolean }
   if (input.castellan && started.castellan !== true) throw new Error('この計算サーバーは城代に未対応です。計算サーバーを最新版に更新してください。')

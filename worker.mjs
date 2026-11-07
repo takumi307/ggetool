@@ -16,12 +16,14 @@ export default {
     if (submitting && contentType.split(';')[0].trim().toLowerCase() !== 'application/json') {
       return new Response(null, { status: 415 })
     }
+    const timeout = AbortSignal.timeout(55000)
     try {
       const upstream = await fetch(renderOrigin + path, {
         method: request.method,
         headers: submitting ? { 'Content-Type': 'application/json' } : {},
         body: submitting ? request.body : undefined,
         redirect: 'manual',
+        signal: timeout,
       })
       if (upstream.status >= 300 && upstream.status < 400) {
         return Response.json({ detail: 'Unexpected redirect from Render' }, { status: 502 })
@@ -34,7 +36,7 @@ export default {
         },
       })
     } catch {
-      return Response.json({ detail: 'Render is unavailable' }, { status: 502 })
+      return Response.json({ detail: 'Render did not respond' }, { status: timeout.aborted ? 504 : 502 })
     }
   },
 }

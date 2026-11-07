@@ -21,8 +21,11 @@ export default {
         method: request.method,
         headers: submitting ? { 'Content-Type': 'application/json' } : {},
         body: submitting ? request.body : undefined,
-        redirect: 'error',
+        redirect: 'manual',
       })
+      if (upstream.status >= 300 && upstream.status < 400) {
+        return Response.json({ detail: 'Unexpected redirect from Render' }, { status: 502 })
+      }
       return new Response(upstream.body, {
         status: upstream.status,
         headers: {

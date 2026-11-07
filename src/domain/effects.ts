@@ -12,7 +12,7 @@ export function addEffects(target: Totals, effects: EffectEntry[]): void {
   }
 }
 
-/** 確認済みの装備上限のみを返す（未確認・無効は含めない）。 */
+/** 確認済みの効果上限を返す（未確認・無効は含めない）。 */
 export function knownCaps(stats: StatDefinition[]): Map<string, number> {
   return new Map(stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap as number]))
 }
@@ -23,7 +23,9 @@ export function effectiveValue(equipment: Totals, gem: Totals, caps: Map<string,
   const weapon = equipment[id] ?? 0
   const jewel = gem[id] ?? 0
   if (id === 'C003') return Math.min(weapon + jewel, cap)
-  return Math.min(weapon, cap) + (id.startsWith('CNG') || id.startsWith('CPG') ? Math.min(jewel, cap) : jewel)
+  const gemCap = id === 'C007' ? caps.get('CG007') ?? Infinity
+    : id.startsWith('CNG') || id.startsWith('CPG') ? cap : Infinity
+  return Math.min(weapon, cap) + Math.min(jewel, gemCap)
 }
 
 /** Give each castellan effect equal weight relative to its cap. */

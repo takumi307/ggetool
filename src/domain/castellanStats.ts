@@ -25,7 +25,7 @@ const opponentEffects = [
 ] as const
 
 export const CASTELLAN_GEM_ALIASES = new Map([
-  ['CG001', 'C001'], ['CG002', 'C002'], ['CG003', 'C003'],
+  ['CG001', 'C001'], ['CG002', 'C002'], ['CG003', 'C003'], ['CG007', 'C007'],
 ])
 
 const stat = (id: string, name: string, category: StatDefinition['category'], cap: number | null): StatDefinition => ({
@@ -36,6 +36,7 @@ export const CASTELLAN_STAT_SEEDS: StatDefinition[] = [
   ...weapons.map(([id, name, cap]) => stat(id, name, 'equipment', cap)),
   { ...stat('C012', '中庭防御時に受けるレベル10北の守護者の援軍', 'equipment', null), unit: '人' },
   stat('CG003', '中庭で防御する際の戦闘力', 'gem', null),
+  stat('CG007', '防衛中の城壁最大部隊数', 'gem', null),
   ...opponentEffects.map(([id, name, cap]) => stat('CNG' + id, 'NPC' + name, 'gem', cap)),
   ...opponentEffects.map(([id, name, cap]) => stat('CPG' + id, '城主' + name, 'gem', cap)),
 ]

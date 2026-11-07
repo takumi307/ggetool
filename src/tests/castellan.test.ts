@@ -15,6 +15,18 @@ describe('castellan caps and assignments', () => {
     expect(caps.get('CPG01')).toBe(caps.get('CNG01'))
   })
 
+  it('adds the general wall capacity gem to the regular defense effect', () => {
+    const seed = mergeCastellanStats([]).find(stat => stat.id === 'CG007')!
+    expect(seed).toMatchObject({ name: '防衛中の城壁最大部隊数', category: 'gem', capStatus: 'unknown' })
+    const caps = knownCaps(CASTELLAN_STAT_SEEDS)
+    const gems = {}
+    addEffects(gems, [{ statId: 'CG007', value: 18 }])
+    expect(effectiveValue({ C007: 60 }, gems, caps, 'C007')).toBe(68)
+    expect(effectiveValue({}, gems, caps, 'CNG01')).toBe(0)
+    caps.set('CG007', 10)
+    expect(effectiveValue({ C007: 60 }, gems, caps, 'C007')).toBe(60)
+  })
+
   it('updates only unchanged legacy definitions and retains IDs', () => {
     const seed = CASTELLAN_STAT_SEEDS.find(s => s.id === 'C003')!
     const legacy = { ...seed, name: '中庭防御時の戦闘力', cap: null, capStatus: 'unknown' as const }

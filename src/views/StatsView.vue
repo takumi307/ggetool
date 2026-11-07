@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
 import type { StatDefinition, StatCategory, CapStatus } from '@/domain'
 import { validateStat } from '@/domain/validation'
 
 const db = useDb()
 const app = useAppStore()
+const courtyard = computed(() => items.value.find(item => item.id === 'C003'))
 const items = ref<StatDefinition[]>([]), error = ref(''), editing = ref<StatDefinition | null>(null)
 const categories: { title: string, value: StatCategory }[] = [
   { title: '装備', value: 'equipment' }, { title: 'ジェム', value: 'gem' }
@@ -67,7 +68,8 @@ async function remove(s: StatDefinition) {
         <strong>{{ s.name }}</strong>
         <div class="text-caption">
           {{ s.category === 'equipment' ? '装備' : 'ジェム' }} /
-          上限：{{ s.capStatus === 'known' ? String(s.cap) + s.unit : s.capStatus === 'unknown' ? '未確認' : '無効' }}
+          <template v-if="s.id === 'CG003'">上限は武具と共通（{{ courtyard?.capStatus === 'known' ? String(courtyard.cap) + courtyard.unit : courtyard?.capStatus === 'disabled' ? '無効' : '未確認' }}）</template>
+          <template v-else>上限：{{ s.capStatus === 'known' ? String(s.cap) + s.unit : s.capStatus === 'unknown' ? '未確認' : '無効' }}</template>
         </div>
       </div>
       <div>
@@ -81,8 +83,9 @@ async function remove(s: StatDefinition) {
       <h3 class="text-h6 mb-3">効果の編集</h3>
       <v-text-field v-model="editing.name" label="効果名" />
       <v-select v-model="editing.category" :items="categories" label="区分" />
-      <v-select v-model="editing.capStatus" :items="statuses" label="上限の状態" />
-      <v-text-field v-if="editing.capStatus === 'known'" v-model.number="editing.cap" type="number" min="0" label="上限値" />
+      <p v-if="editing.id === 'CG003'" class="mb-3">中庭の上限を変える場合は、武具側の中庭防御効果を編集してください。</p>
+      <v-select v-else v-model="editing.capStatus" :items="statuses" label="上限の状態" />
+      <v-text-field v-if="editing.id !== 'CG003' && editing.capStatus === 'known'" v-model.number="editing.cap" type="number" min="0" label="上限値" />
       <v-text-field v-model="editing.unit" label="単位" />
       <v-textarea v-model="editing.description" label="説明" rows="2" />
       <v-alert v-if="error" type="error" class="mb-2">{{ error }}</v-alert>

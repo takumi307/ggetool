@@ -101,7 +101,7 @@ function showCommanderList() { router.push('/commanders') }
           参照先の装備・ジェムが見つからないため、比較できません。
         </v-alert>
         <template v-else-if="comparison">
-          <p class="text-caption mt-3 mb-2">差分は「表示中の{{ roleLabel }} − 比較対象」です。装備に既知の上限を適用したうえでジェムを加算した数値で比較します。</p>
+          <p class="text-caption mt-3 mb-2">差分は「表示中の{{ roleLabel }} − 比較対象」です。効果ごとの上限を適用した値で比較します。</p>
           <div class="d-flex justify-space-between text-caption font-weight-bold py-2">
             <span>効果</span><span>現在 / 比較対象 / 差分</span>
           </div>
@@ -122,7 +122,7 @@ function showCommanderList() { router.push('/commanders') }
         <v-chip v-if="selected.calculatedStats._approximate" color="warning" size="small" class="mt-2">暫定解・最適性未保証</v-chip>
         <v-alert v-if="!selectedLines.recalculated" type="warning" variant="tonal" density="compact" class="mt-3">使用した装備またはジェムが現在の登録に見つからないため、保存時の合計値を表示しています。</v-alert>
         <v-alert v-else-if="selectedLines.drift > 0" type="warning" variant="tonal" density="compact" class="mt-3">保存後に装備・ジェムの内容が変わったため、{{ selectedLines.drift }}件の効果が保存時の合計と異なります。表示値は現在の登録内容で計算しています。</v-alert>
-        <v-alert v-else type="info" variant="tonal" density="compact" class="mt-3">表示値は「装備合計に既知の上限を適用してからジェムを加算」した値です（最適化計算と同じ定義）。</v-alert>
+        <v-alert v-else type="info" variant="tonal" density="compact" class="mt-3">表示値には最適化と同じ効果別の上限を適用しています。</v-alert>
       </v-card>
       <CommanderEquipmentPanel :build="selected" :equipment="equipment" :gems="gems" :stats="stats" />
       <v-card class="pa-4 mb-3">
@@ -140,7 +140,7 @@ function showCommanderList() { router.push('/commanders') }
         <p v-if="!numericStats.length" class="text-body-2">保存済みステータスがありません。</p>
         <div v-for="s in numericStats" :key="s.id" class="py-2">
           <div class="d-flex justify-space-between ga-2"><span>{{ statName(s.id) }}</span><strong>{{ round(s.effective) }}{{ s.unit }}</strong></div>
-          <p v-if="selectedLines.recalculated" class="text-caption">装備 {{ round(s.equipment) }}{{ s.unit }}<template v-if="s.cap !== null">（上限 {{ s.cap }}{{ s.unit }}<span v-if="s.equipment > s.cap">、超過 {{ round(s.equipment - s.cap) }}{{ s.unit }}</span>）</template> ＋ ジェム {{ round(s.gem) }}{{ s.unit }}</p>
+          <p v-if="selectedLines.recalculated" class="text-caption">装備 {{ round(s.equipment) }}{{ s.unit }}<template v-if="s.cap !== null">（上限 {{ s.cap }}{{ s.unit }}{{ s.id === 'C003' ? '・武具とジェムの合計' : s.id.startsWith('CNG') || s.id.startsWith('CPG') ? '・ジェム' : '' }}<span v-if="s.equipment > s.cap && s.id !== 'C003'">、超過 {{ round(s.equipment - s.cap) }}{{ s.unit }}</span>）</template> ＋ ジェム {{ round(s.gem) }}{{ s.unit }}</p>
           <v-divider class="mt-2" />
         </div>
       </v-card>

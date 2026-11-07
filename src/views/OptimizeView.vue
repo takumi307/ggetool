@@ -2,6 +2,7 @@
 import { onMounted, ref, computed, watch, onBeforeUnmount } from 'vue'
 import EquipmentAvailability from '@/components/EquipmentAvailability.vue'
 import { equipmentAvailability } from '@/domain/equipmentAvailability'
+import { buildBreakdown, effectiveTotals, effectiveValue, knownCaps } from '@/domain/effects'
 import { canonicalStatId } from '@/domain/statAliases'
 import { useRoute } from 'vue-router'
 import type { StoreSnapshot } from '@/repositories/types'
@@ -10,11 +11,11 @@ import { saveCommander, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignm
 import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob } from '@/domain/cpSatClient'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type EquipmentAllocation, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
 import { type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
-import { runOptimizeSingle } from '@/domain/optimizerRunner'
+import { runCastellanPlan, runOptimizeSingle } from '@/domain/optimizerRunner'
 
 const db = useDb()
 const app = useAppStore()
-const { roleLabel } = app
+const { roleLabel, workspace } = app
 const route = useRoute()
 const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const plans = ref<BuildPlan[]>([])
@@ -63,8 +64,13 @@ const commanderChoices = computed(() => eligibleCommanders.value.map(c => ({
   title: roleLabel + ' ' + (commanderNumber(c, existingCommanders.value) ?? '未設定') + '：' + c.name, value: c.id
 })))
 
-const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))
+const activePlans = computed(() => {
+  const npcRank = (plan: BuildPlan) => workspace === 'castellan' &&
+    presets.value.find(preset => preset.id === plan.presetId)?.castellanObjective === 'npc' ? 0 : 1
+  return plans.value.filter(p => p.enabled).sort((a, b) => npcRank(a) - npcRank(b) || a.priority - b.priority)
+})
 const usesCpSat = computed(() => allocationMode.value !== 'single')
+const browserBatch = computed(() => workspace === 'castellan' && usesCpSat.value)
 const reoptimizing = computed(() => allocationMode.value === 'selected' || allocationMode.value === 'all')
 const availableSlots = computed(() => {
   const released = new Set(targetCommanders.value.map(commander => commander.id))
@@ -80,7 +86,7 @@ const canRun = computed(() => ready.value && !running.value && !committing.value
   availableSlots.value.every(slot => slot.available > 0) &&
   (reoptimizing.value ? targetCommanders.value.length > 0 : freePositions.value > 0) &&
   (allocationMode.value === 'new' ? pendingPlanCount.value > 0 : usesCpSat.value || Boolean(preset.value)) &&
-  (!usesCpSat.value || executionMode.value === 'local' || Boolean(cpSatEndpoint)))
+  (!usesCpSat.value || browserBatch.value || executionMode.value === 'local' || Boolean(cpSatEndpoint)))
 const mode = ref<OptimizerMode>('auto')
 const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
 const presets = ref<BuildPreset[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), stats = ref<StatDefinition[]>([])
@@ -99,6 +105,11 @@ const eqName = (id?: string) => equipment.value.find(e => e.id === id)?.name ?? 
 const gemName = (id?: string) => gems.value.find(g => g.id === id)?.name ?? 'なし'
 const effectText = (id: string, value: number) => `${statName(id)}：${value}${stats.value.find(s => s.id === id)?.unit ?? '%'}`
 const itemEffects = (slot: SlotType, r: OptimizationResult) => equipment.value.find(e => e.id === r.equipmentIds[slot])?.effects ?? []
+const shownTotals = (r: OptimizationResult) => {
+  if (workspace !== 'castellan') return r.totals
+  const parts = buildBreakdown(r, equipment.value, gems.value)
+  return effectiveTotals(parts.equipment, parts.gem, knownCaps(stats.value))
+}
 const gemEffects = (slot: SlotType, r: OptimizationResult) => gems.value.find(g => g.id === r.gemAssignments.find(a => a.slotType === slot)?.gemId)?.effects ?? []
 function applyRequestedMode() {
   const requestedPresetId = typeof route.query.presetId === 'string' ? route.query.presetId : ''
@@ -206,7 +217,7 @@ async function runPlans() {
           previousGemIds: Object.fromEntries(c.gemAssignments.map(a => [a.slotType, a.gemId]))
         }))
     if (!jobs.length) { message.value = '最適化対象がありません'; return }
-    if (executionMode.value === 'local') {
+    if (!browserBatch.value && executionMode.value === 'local') {
       try {
         const check = await fetch(localEndpoint + '/health', { signal: controller.value.signal })
         if (!check.ok) throw new Error('HTTP ' + check.status)
@@ -217,16 +228,19 @@ async function runPlans() {
     const releasedIds = new Set(targets.map(c => c.id))
     const reservedEq = usedEq.filter(a => !releasedIds.has(a.commanderBuildId))
     const reservedGem = usedGem.filter(a => !releasedIds.has(a.commanderBuildId))
-    progress.value = `CP-SATで${jobs.length}体の装備配分を計算中（最大${timeLimitSeconds.value}秒/段階）。通信は短時間の状況確認に切り替えます`
-    const response = await optimizeCpSat({
+    progress.value = browserBatch.value
+      ? `ブラウザで${jobs.length}体の城代の装備配分を計算中…`
+      : `CP-SATで${jobs.length}体の装備配分を計算中（最大${timeLimitSeconds.value}秒/段階）。`
+    const input = {
       jobs, equipment: equipment.value, gems: gems.value, stats: stats.value,
       reservedEquipmentIds: reservedEq.map(a => a.equipmentId),
       reservedGemIds: reservedGem.map(a => a.gemId),
-      timeLimitSeconds: timeLimitSeconds.value,
       maxAchieved: allocationMode.value === 'new' ? freePositions : undefined,
-      signal: controller.value.signal,
+    }
+    const response = browserBatch.value ? await runCastellanPlan(input, controller.value.signal) : await optimizeCpSat({
+      ...input, timeLimitSeconds: timeLimitSeconds.value, signal: controller.value.signal,
       endpoint: executionMode.value === 'local' ? localEndpoint : cpSatEndpoint,
-      onProgress: (text: string) => { progress.value = text }
+      onProgress: (text: string) => { progress.value = text },
     })
     if (response.achieved === 0) {
       const reservedEqSet = new Set(reservedEq.map(a => a.equipmentId))
@@ -242,7 +256,7 @@ async function runPlans() {
         const id = canonicalStatId(t.statId)
         const equipmentMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableEq.filter(e => e.slotType === slot).map(e => effectSum(e.effects, id))), 0)
         const gemMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableGems.filter(g => g.allowedSlots.includes(slot)).map(g => effectSum(g.effects, id) + (p.name.includes('援軍特化') && id === 'S002' ? effectSum(g.effects, 'G005') : 0))), 0)
-        const optimistic = Math.min(equipmentMax, capMap.get(id) ?? Infinity) + gemMax
+        const optimistic = effectiveValue({ [id]: equipmentMax }, { [id]: gemMax }, capMap, id)
         return { preset: p.name, stat: statName(t.statId), required: t.minValue, optimistic, impossible: optimistic + 1e-8 < t.minValue }
       }))
     }
@@ -254,7 +268,9 @@ async function runPlans() {
     cpSatStatus.value = response.status
     cpSatOptimal.value = response.optimal
     cpSatUpperBound.value = response.upperBound ?? null
-    message.value = `${response.achieved} / ${response.requested}体が目標達成。理論上の上限：${response.upperBound ?? '算出不可'}体。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
+    message.value = browserBatch.value
+      ? `${response.achieved} / ${response.requested}体の暫定候補。内容を確認して保存してください。`
+      : `${response.achieved} / ${response.requested}体が目標達成。理論上の上限：${response.upperBound ?? '算出不可'}体。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
   } catch (e) {
     message.value = e instanceof Error && e.name === 'AbortError'
       ? '画面での待機を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
@@ -315,7 +331,8 @@ async function saveCpSat() {
       <v-chip v-for="target in preset.targets" :key="target.statId" size="small">
         {{ effectText(target.statId, target.minValue) }}以上
       </v-chip>
-      <span v-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
+      <span v-if="preset.castellanObjective" class="text-body-2">{{ preset.castellanObjective === 'npc' ? '通常＋NPC効果を最大化' : '通常＋対城主効果をバランス配分' }}</span>
+      <span v-else-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
     </div>
     <v-alert v-if="!usesCpSat && !presets.length" type="warning" variant="tonal" class="mb-3">
       先に<router-link to="/presets">プリセットを登録</router-link>してください。
@@ -339,11 +356,12 @@ async function saveCpSat() {
     <v-alert v-if="!reoptimizing && !freePositions" type="warning" variant="tonal" class="mt-3">
       管理枠が埋まっています。既存の構成を使う場合は再最適化を選んでください。
     </v-alert>
-    <v-alert v-if="usesCpSat && executionMode === 'local'" type="info" variant="tonal" class="mt-3">
+    <v-alert v-if="usesCpSat && !browserBatch && executionMode === 'local'" type="info" variant="tonal" class="mt-3">
       このPCでPython最適化サーバーを起動してください。
       <a href="https://github.com/takumi307/ggetool/blob/main/optimizer-service/LOCAL_WINDOWS.md" target="_blank" rel="noopener">起動手順</a>
     </v-alert>
-    <details class="my-4">
+    <p v-if="browserBatch" class="text-body-2 mt-3 mb-4">ブラウザでNPC向けから割り当て、残りを配分します。結果は暫定候補です。</p>
+    <details v-else class="my-4">
       <summary class="text-body-2">計算設定{{ usesCpSat ? (executionMode === 'local' ? '（このPC）' : '（クラウド）') : '' }}</summary>
       <v-select v-if="!usesCpSat" v-model="mode" :disabled="running || saving" :items="modeOptions"
         label="最適化方法" class="mt-2" />
@@ -357,14 +375,14 @@ async function saveCpSat() {
       </template>
     </details>
     <div class="d-flex align-center ga-2 flex-wrap">
-      <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ usesCpSat ? (reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成') : '最適化を実行' }}</v-btn>
-      <v-btn v-if="running" color="warning" variant="outlined" @click="controller?.abort()">{{ usesCpSat ? '待機を中断' : '探索を中止' }}</v-btn>
+      <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ browserBatch ? (reoptimizing ? '城代を再最適化' : '城代をまとめて作成') : usesCpSat ? (reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成') : '最適化を実行' }}</v-btn>
+      <v-btn v-if="running" color="warning" variant="outlined" @click="controller?.abort()">{{ usesCpSat && !browserBatch ? '待機を中断' : '探索を中止' }}</v-btn>
     </div>
   </v-card>
   <v-progress-linear v-else-if="!message" indeterminate />
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">
-    <h3 class="text-subtitle-1 mb-2">CP-SAT最適化結果（{{ cpSatPreview.length }}体）</h3>
+    <h3 class="text-subtitle-1 mb-2">{{ browserBatch ? '城代の最適化結果' : 'CP-SAT最適化結果' }}（{{ cpSatPreview.length }}体）</h3>
     <v-chip :color="cpSatOptimal ? 'success' : 'warning'" class="mb-3">{{ cpSatOptimal ? 'OPTIMAL：最適性証明済み' : cpSatStatus + '：暫定解' }}</v-chip>
     <div v-if="cpSatUpperBound !== null" class="mb-3">達成 {{ cpSatPreview.length }}体 ／ 理論上の上限 {{ cpSatUpperBound }}体 <span class="text-medium-emphasis">（差 {{ Math.max(0, cpSatUpperBound - cpSatPreview.length) }}体）</span></div>
     <v-alert v-if="allocationMode !== 'new'" type="info" variant="tonal" class="mb-3">
@@ -386,6 +404,10 @@ async function saveCpSat() {
             <strong>{{ SLOT_LABELS[slot] }}：{{ eqName(entry.result.equipmentIds[slot]) }}</strong>
             <div v-for="(effect, i) in itemEffects(slot, entry.result)" :key="i" class="text-body-2">{{ effectText(effect.statId, effect.value) }}</div>
             <div>ジェム：{{ gemName(entry.result.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</div>
+          </div>
+          <div v-if="browserBatch" class="mt-3">
+            <strong>上限適用後の効果</strong>
+            <div v-for="(value, id) in shownTotals(entry.result)" :key="id">{{ effectText(String(id), value) }}</div>
           </div>
         </v-expansion-panel-text>
       </v-expansion-panel>
@@ -446,7 +468,7 @@ async function saveCpSat() {
         <v-chip size="x-small" :color="s.missing ? 'warning' : 'success'">{{ s.missing ? '不足 ' + s.missing : '達成' }}</v-chip>
       </div>
       <h3 class="text-subtitle-1 mt-3 mb-2">全ステータス</h3>
-      <div v-for="(value, id) in result.totals" :key="id">{{ statName(String(id)) }}：{{ value }}</div>
+      <div v-for="(value, id) in shownTotals(result)" :key="id">{{ statName(String(id)) }}：{{ value }}</div>
       <v-alert v-if="result.overflow.length" type="warning" variant="tonal" class="mt-3">
         装備の上限超過：{{ result.overflow.map(s => statName(s.statId) + ' ' + s.raw + ' / ' + s.cap).join('、') }}
       </v-alert>

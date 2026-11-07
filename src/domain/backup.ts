@@ -1,5 +1,6 @@
 import { SCHEMA_VERSION, SLOT_TYPES, type Equipment, type Gem, type StatDefinition } from './types'
 import { STORE_NAMES, STORE_KEYS, type Database, type StoreName, type StoreSchemas } from '@/repositories/types'
+import { mergeCastellanStats } from './castellanStats'
 import { WORKSPACE_LABELS, type BuildWorkspace } from './workspace'
 import { validateEquipment, validateGem, validateStat } from './validation'
 
@@ -45,6 +46,7 @@ export function parseBackup(text: string, workspace: BuildWorkspace = 'commander
   const statIds = keys('stats'), eqIds = keys('equipment'), gemIds = keys('gems')
   const presetIds = keys('presets'), commanderIds = keys('commanders')
   for (const p of stores.presets as StoreSchemas['presets'][]) {
+    if (p.castellanObjective !== undefined && (workspace !== 'castellan' || !['npc', 'lord'].includes(p.castellanObjective))) throw Error('城代の最適化方針が不正です')
     if (!Array.isArray(p.targets) || !Array.isArray(p.priorityStats) || !Array.isArray(p.maximizeStats)) throw Error('プリセットが不正です')
     if (p.targets.some(v => !statIds.has(v.statId) || !Number.isFinite(v.minValue)) || [...p.priorityStats, ...p.maximizeStats].some(id => !statIds.has(id))) throw Error('プリセットに不正な効果参照があります')
   }
@@ -66,5 +68,6 @@ export async function importBackup(db: Database, backup: BackupData): Promise<vo
   // JSON backup data is intentionally JSON-serializable; this also detaches
   // nested arrays/objects while preserving the single-transaction rollback.
   const plainStores = JSON.parse(JSON.stringify(backup.stores)) as BackupData['stores']
+  if (backup.workspace === 'castellan') plainStores.stats = mergeCastellanStats(plainStores.stats)
   await db.replaceAll(plainStores)
 }

@@ -8,13 +8,15 @@ const db = useDb()
 const app = useAppStore()
 const { workspace, roleLabel } = app
 const presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([]), equipment = ref<Equipment[]>([]), editing = ref<BuildPreset | null>(null), error = ref('')
-const defaults = workspace === 'castellan' ? [
+const defaults: { name: string; targets: readonly (readonly [string, number])[]; defaultCount: number; description: string; castellanObjective?: BuildPreset['castellanObjective'] }[] = workspace === 'castellan' ? [
+  { name: 'NPC防衛・最大化', targets: [], defaultCount: 1, castellanObjective: 'npc', description: '通常防衛とNPC専用効果を、各上限に対する達成率の合計で最大化します。' },
+  { name: '対城主防衛・バランス', targets: [], defaultCount: 1, castellanObjective: 'lord', description: 'NPC向けの割当後、通常防衛と対城主効果を残りの装備で均等に高めます。作成計画で必要数を指定できます。' },
   { name: '防御バランス（例）', targets: [['C001', 100], ['C002', 100], ['C003', 50]], defaultCount: 1, description: '編集できる目標の例です。ゲームの上限値ではありません。' }
-] as const : [
+] : [
   { name: 'バランス型', targets: [['S002', 120], ['S001', 120], ['S003', 50]], defaultCount: 30, description: '暫定の最低条件。合計150%への接近とNPC補正を含む80%の最適化は未対応。' },
   { name: '略奪特化型', targets: [['S008', 50]], defaultCount: 3, description: '略奪量50%のみを最低条件とする' },
   { name: '援軍特化型', targets: [['S002', 120], ['S003', 50], ['S007', 90]], defaultCount: 1, description: '遠隔兵120%、中庭50%、移動速度90%' }
-] as const
+]
 async function reload() { presets.value = await db.repo('presets').getAll(); stats.value = await db.repo('stats').getAll(); equipment.value = await db.repo('equipment').getAll() }
 onMounted(reload)
 function fresh(): BuildPreset {
@@ -37,7 +39,7 @@ async function seed() {
     if (presets.value.some(p => p.name === d.name) || d.targets.some(([id]) => !stats.value.some(s => s.id === id))) continue
     await db.repo('presets').put({
       ...fresh(), name: d.name, targets: d.targets.map(([statId, minValue]) => ({ statId, minValue })),
-      defaultCount: d.defaultCount, description: d.description
+      defaultCount: d.defaultCount, description: d.description, castellanObjective: d.castellanObjective
     })
   }
   await reload(); await app.refreshCounts(db)
@@ -75,7 +77,7 @@ async function remove(p: BuildPreset) {
   <v-alert v-if="error && !editing" type="error" class="mb-3">{{ error }}</v-alert>
   <v-card v-for="p in presets" :key="p.id" class="pa-3 mb-2">
     <strong>{{ p.name }}</strong><span v-if="p.requiredEquipmentStatId" class="text-caption ml-2">必須装備効果：{{ stats.find(s => s.id === p.requiredEquipmentStatId)?.name ?? p.requiredEquipmentStatId }}</span><span v-if="p.requiredEquipmentKeyword" class="text-caption ml-2">必須装備：{{ p.requiredEquipmentKeyword }}</span>
-    <p class="text-body-2">{{ p.targets.map(t => (stats.find(s => s.id === t.statId)?.name ?? t.statId) + ' ≥ ' + t.minValue).join(' / ') || '目標なし' }}</p>
+    <p class="text-body-2">{{ p.targets.map(t => (stats.find(s => s.id === t.statId)?.name ?? t.statId) + ' ≥ ' + t.minValue).join(' / ') || (p.castellanObjective === 'npc' ? '通常＋NPCの効果を最大化' : p.castellanObjective === 'lord' ? '通常＋対城主の効果をバランス配分' : '目標なし') }}</p>
     <v-btn size="small" variant="text" @click="start(p)">編集</v-btn>
     <v-btn size="small" variant="text" color="error" @click="remove(p)">削除</v-btn>
   </v-card>

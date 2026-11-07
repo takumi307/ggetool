@@ -129,6 +129,8 @@ try {
   await link('ビルドプリセット').click()
   await button('標準プリセットを追加').click()
   await visible(link('防御バランス（例）'))
+  await visible(link('NPC防衛・最大化'))
+  await visible(link('対城主防衛・バランス'))
 
   await link('バックアップ・復元').click()
   await selectBackup(fixture)
@@ -163,7 +165,7 @@ try {
   await visible(link('復元しました'))
   await link('最適化実行').click()
   await visible(heading('城代の最適化'))
-  await visible(button('CP-SATで新規作成'))
+  await visible(button('城代をまとめて作成'))
   await select('最適化モード').press('ArrowDown')
   await option('1体だけ作る').click()
   await visible(link('防御時の乱闘兵の戦闘力：50%以上'))

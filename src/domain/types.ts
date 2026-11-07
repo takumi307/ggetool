@@ -66,6 +66,7 @@ export interface BuildTarget {
 }
 
 export interface BuildPreset {
+  castellanObjective?: 'npc' | 'lord'
   /** 各司令官に必ず1個以上使う装備の名前部分一致条件。空なら制約なし */
   requiredEquipmentKeyword?: string
   /** 必須装備を装備名ではなく装備に付く効果で指定 */

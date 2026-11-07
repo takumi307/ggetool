@@ -1,3 +1,4 @@
+import { castellanScoringStats } from './castellanStats'
 import { canonicalStatId } from './statAliases'
 import type { BuildPreset, EffectEntry, Equipment, StatDefinition } from './types'
 
@@ -18,7 +19,25 @@ export function knownCaps(stats: StatDefinition[]): Map<string, number> {
 
 /** 計算の唯一の定義: min(装備合計, 確認済み上限) + ジェム合計。 */
 export function effectiveValue(equipment: Totals, gem: Totals, caps: Map<string, number>, id: string): number {
-  return Math.min(equipment[id] ?? 0, caps.get(id) ?? Infinity) + (gem[id] ?? 0)
+  const cap = caps.get(id) ?? Infinity
+  const weapon = equipment[id] ?? 0
+  const jewel = gem[id] ?? 0
+  if (id === 'C003') return Math.min(weapon + jewel, cap)
+  return Math.min(weapon, cap) + (id.startsWith('CNG') || id.startsWith('CPG') ? Math.min(jewel, cap) : jewel)
+}
+
+/** Give each castellan effect equal weight relative to its cap. */
+export function castellanQuality(
+  objective: NonNullable<BuildPreset['castellanObjective']>,
+  equipment: Totals,
+  gems: Totals,
+  caps: Map<string, number>,
+  scoringStats = castellanScoringStats(objective)
+): number {
+  return scoringStats.reduce((total, stat) => {
+    const ratio = effectiveValue(equipment, gems, caps, stat.id) / (caps.get(stat.id) || stat.cap || 1)
+    return total + (objective === 'lord' ? Math.sqrt(ratio) : ratio)
+  }, 0)
 }
 
 /** 援軍特化プリセットの遠隔(S002)目標に限り、NPC遠隔ジェム(G005)を加算する。 */

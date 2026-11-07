@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { SCHEMA_VERSION, STAT_SEEDS } from '@/domain'
-import { CASTELLAN_STAT_SEEDS } from '@/domain/castellanStats'
+import { mergeCastellanStats } from '@/domain/castellanStats'
 import { WORKSPACE_LABELS, type BuildWorkspace } from '@/domain/workspace'
 import { openDatabase, type Database } from '@/repositories'
 
@@ -48,10 +48,12 @@ export const useAppStore = defineStore('app', {
 /** 初回起動時のみ初期データ投入（既存データは上書きしない） */
 export async function seedIfEmpty(db: Database, workspace: BuildWorkspace = 'commander'): Promise<void> {
   // Add only missing built-in effects, preserving all existing user data.
-  const existing = new Set((await db.repo('stats').getAll()).map(s => s.id))
-  const seeds = workspace === 'castellan' ? CASTELLAN_STAT_SEEDS : STAT_SEEDS
-  const missing = seeds.filter(s => !existing.has(s.id))
-  if (missing.length) await db.repo('stats').bulkPut(missing)
+  const existing = await db.repo('stats').getAll()
+  const current = new Map(existing.map(stat => [stat.id, stat]))
+  const updates = workspace === 'castellan'
+    ? mergeCastellanStats(existing).filter(stat => stat !== current.get(stat.id))
+    : STAT_SEEDS.filter(stat => !current.has(stat.id))
+  if (updates.length) await db.repo('stats').bulkPut(updates)
   if (!(await db.repo('settings').get('app'))) {
     await db.repo('settings').put({ id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'default' })
   }

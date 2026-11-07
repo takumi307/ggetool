@@ -53,8 +53,9 @@ const fixture = {
   },
 }
 const browser = await chromium.launch()
+const page = await browser.newPage()
+page.setDefaultTimeout(12000)
 try {
-  const page = await browser.newPage()
   const root = 'http://127.0.0.1:4173'
   const link = name => page.getByText(name, { exact: true })
   const button = name => page.getByRole('button', { name, exact: true })
@@ -74,14 +75,14 @@ try {
   await visible(link('復元しました'))
 
   await link('最適化実行').click()
-  await select('最適化モード').click()
+  await select('最適化モード').press('ArrowDown')
   await option('指定司令官を再最適化').click()
-  await select('再最適化する司令官（複数選択）').click()
+  await select('再最適化する司令官（複数選択）').press('ArrowDown')
   await visible(option('司令官 2：検証-unlocked-a'))
   await visible(option('司令官 3：検証-unlocked-b'))
   assert.equal(await option('司令官 1：検証-locked').count(), 0)
   await select('再最適化する司令官（複数選択）').press('Escape')
-  await select('最適化モード').click()
+  await select('最適化モード').press('ArrowDown')
   await option('司令官全体を再最適化（ロック中は除外）').click()
   await button('CP-SATで再最適化').click()
   await visible(link('CP-SAT最適化結果（2体）'))
@@ -104,6 +105,9 @@ try {
   }
   assert.deepEqual(helmets.sort(), ['upgrade-a-helmet', 'upgrade-b-helmet'])
   console.log('Browser reoptimization, atomic save, and persistence verified')
+} catch (error) {
+  console.error(await page.locator('body').innerText())
+  throw error
 } finally {
   await browser.close()
 }

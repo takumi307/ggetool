@@ -143,10 +143,10 @@ try {
     ...fixture, workspace: 'castellan',
     stores: {
       ...fixture.stores,
-      equipment: slots.map(slot => ({
-        ...makeGear('defense', slot, 10),
+      equipment: ['defense', 'reserve-a', 'reserve-b', 'reserve-c'].flatMap(prefix => slots.map(slot => ({
+        ...makeGear(prefix, slot, 10),
         effects: ['C001', 'test-other-a', 'test-other-b'].map((statId, i) => ({ statId, value: i ? 0 : 10 })),
-      })),
+      }))),
       gems: [{
         ...fixture.stores.gems[0], id: 'defense-gem', name: 'defense-gem',
         effects: [{ statId: 'CG001', value: 15 }],
@@ -154,8 +154,13 @@ try {
       stats: [...fixture.stores.stats, defenseStat, defenseGemStat],
       presets: [{
         ...fixture.stores.presets[0], name: '城代検証', targets: [{ statId: 'C001', minValue: 50 }],
-      }],
-      plans: [{ id: 'castellan-plan', presetId: 'test-preset', count: 2, priority: 1, enabled: true }],
+      }, ...['npc', 'lord'].map(kind => ({
+        ...fixture.stores.presets[0], id: 'z-' + kind, name: '検証-' + kind, targets: [], castellanObjective: kind,
+      }))],
+      plans: [
+        { id: 'npc-plan', presetId: 'z-npc', count: 1, priority: 2, enabled: true },
+        { id: 'lord-plan', presetId: 'z-lord', count: 2, priority: 1, enabled: true },
+      ],
       commanders: [], equipmentAllocations: [], gemAllocations: [],
     },
   }
@@ -184,8 +189,15 @@ try {
   await castellanCard.getByText('結果の詳細', { exact: true }).click()
   await visible(heading('最適化結果'))
   await visible(page.getByText('防御時の乱闘兵の戦闘力：50 / 50', { exact: false }))
+  await link('最適化実行').click()
+  await button('城代をまとめて作成').click()
+  await visible(heading('城代の最適化結果（3体）'))
+  await button('この3体を保存').click()
+  await visible(page.getByText('3体の城代を保存しました', { exact: false }))
+  await link('保存済み城代を確認').click()
+  await visible(card('検証-npc 1'))
+  await visible(card('検証-lord 2'))
   await tab('司令官').click()
-  await visible(heading('最適化結果'))
   await link('保存済み司令官').click()
   await visible(heading('保存済み司令官'))
   await visible(card('検証-locked').getByText(/兜：locked-helmet/))

@@ -73,7 +73,13 @@ export function mergeCastellanStats(existing: StatDefinition[]): StatDefinition[
   return [...byId.values()]
 }
 
+// Wall capacity, melee/ranged combat and courtyard combat, including NPC-only bonuses.
+const NPC_PRIORITY_STATS = new Set(['C007', 'C001', 'C002', 'C003', 'CNG01', 'CNG06', 'CNG07', 'CNG02'])
+
 export function castellanScoringStats(objective: 'npc' | 'lord') {
   return CASTELLAN_STAT_SEEDS.filter(s =>
-    s.cap !== null && (s.category === 'equipment' || s.id.startsWith(objective === 'npc' ? 'CNG' : 'CPG')))
+    s.cap !== null &&
+    (s.category === 'equipment' || s.id.startsWith(objective === 'npc' ? 'CNG' : 'CPG')) &&
+    (objective !== 'npc' || s.id !== 'C011')
+  ).map(s => ({ ...s, weight: objective === 'npc' && NPC_PRIORITY_STATS.has(s.id) ? 5 : 1 }))
 }

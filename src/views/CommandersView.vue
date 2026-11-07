@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
 import { type CommanderBuild, type Equipment, type Gem, type BuildPreset, type StatDefinition } from '@/domain'
-import { deleteCommander } from '@/domain/commanderService'
+import { deleteCommander, commanderNumber, setCommanderPosition, setCommanderLocked } from '@/domain/commanderService'
 import CommanderEquipmentPanel from '@/components/CommanderEquipmentPanel.vue'
 const app = useAppStore()
 const builds = ref<CommanderBuild[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([])
@@ -15,6 +15,19 @@ const filteredBuilds = computed(() => builds.value.filter(b =>
 ))
 const presetOptions = computed(() => [{ title: 'すべてのプリセット', value: 'all' }, ...presets.value.map(p => ({ title: p.name, value: p.id }))])
 const expandedId = ref('')
+const rosterNumber = (b: CommanderBuild) => commanderNumber(b, builds.value)
+async function updatePosition(b: CommanderBuild, value: number | string) {
+  error.value = ''
+  try { await setCommanderPosition(useDb(), b.id, Number(value)); await reload() }
+  catch (e) { error.value = String(e) }
+}
+async function toggleLock(b: CommanderBuild) {
+  error.value = ''
+  try { await setCommanderLocked(useDb(), b.id, !b.locked); await reload() }
+  catch (e) { error.value = String(e) }
+}
+const assignedEquipment = (id: string) => equipment.value.find(e => e.id === id)?.name ?? '削除済み'
+const assignedGem = (id: string) => gems.value.find(g => g.id === id)?.name ?? '削除済み'
 async function reload() {
   const db = useDb()
   ;[builds.value, equipment.value, gems.value, presets.value, stats.value] = await Promise.all([
@@ -45,11 +58,26 @@ async function remove(b: CommanderBuild) {
   <v-alert v-if="builds.length && !filteredBuilds.length" type="info" variant="tonal" class="mb-3">条件に一致する司令官がありません。</v-alert>
   <v-card v-for="b in filteredBuilds" :key="b.id" class="pa-3 mb-3">
     <div class="d-flex align-center ga-2 flex-wrap">
+      <v-chip color="primary" size="small">司令官 {{ rosterNumber(b) ?? '未設定' }} / 35</v-chip>
       <strong>{{ b.name }}</strong>
+      <v-chip v-if="b.locked" color="warning" size="small">ロック中</v-chip>
       <v-chip size="small">{{ presetName(b.presetId) }}</v-chip>
       <v-chip v-if="b.calculatedStats._approximate" color="warning" size="small">暫定解</v-chip>
     </div>
     <p class="text-caption">{{ new Date(b.createdAt).toLocaleString('ja-JP') }}</p>
+    <div class="d-flex align-center ga-2 flex-wrap my-2">
+      <v-select :model-value="rosterNumber(b)" :items="Array.from({length:35},(_,i)=>({title:'司令官 '+(i+1),value:i+1}))"
+        label="ゲーム内の司令官番号" density="compact" style="max-width:200px" hide-details
+        @update:model-value="updatePosition(b, $event)" />
+      <v-btn size="small" :color="b.locked ? 'warning' : 'default'" variant="outlined"
+        @click="toggleLock(b)">{{ b.locked ? 'ロック解除' : '再最適化から保護' }}</v-btn>
+    </div>
+    <div class="text-caption mb-2">
+      <span v-for="slot in ['helmet','weapon','armor','artifact'] as const" :key="slot" class="mr-3">
+        {{ ({helmet:'兜',weapon:'武器',armor:'鎧',artifact:'工芸品'} as const)[slot] }}：{{ assignedEquipment(b.equipmentIds[slot] ?? '') }}
+        / ジェム：{{ assignedGem(b.gemAssignments.find(a=>a.slotType===slot)?.gemId ?? '') }}
+      </span>
+    </div>
     <v-btn variant="outlined" size="small" class="my-2" @click="expandedId = expandedId === b.id ? '' : b.id">
       {{ expandedId === b.id ? '装備セットを閉じる' : '装備セットを見る' }}
     </v-btn>

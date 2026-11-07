@@ -33,6 +33,16 @@ describe.each(impls)('Database (%s)', (_n, make) => {
     expect((await db.repo('equipment').getAll()).map((e) => e.id)).toEqual(['new'])
     expect(await db.repo('gems').count()).toBe(1)
   })
+  it('rejects a stale snapshot before writing any store', async () => {
+    const db = await make()
+    await db.repo('equipment').put(eqp('old'))
+    const equipment = await db.repo('equipment').getAll()
+    await db.repo('equipment').put(eqp('added-in-another-tab'))
+
+    await expect(db.replaceAll({ equipment: [eqp('new')], gems: [] }, { equipment }))
+      .rejects.toThrow('保存中にデータが変更されました')
+    expect((await db.repo('equipment').getAll()).map(e => e.id).sort()).toEqual(['added-in-another-tab', 'old'])
+  })
   it('seedIfEmpty は初回のみ投入し、既存の上限編集を上書きしない', async () => {
     const db = await make()
     await seedIfEmpty(db)

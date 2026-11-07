@@ -1,4 +1,4 @@
-import { STORE_KEYS, STORE_NAMES, type Database, type Repository, type StoreName, type StoreSchemas } from './types'
+import { STORE_KEYS, STORE_NAMES, type Database, type Repository, type StoreName, type StoreSchemas, type StoreSnapshot } from './types'
 
 /** テスト・フォールバック用のメモリ実装 */
 export class MemoryDatabase implements Database {
@@ -21,7 +21,10 @@ export class MemoryDatabase implements Database {
     }
   }
 
-  async replaceAll(data: Partial<{ [K in StoreName]: StoreSchemas[K][] }>): Promise<void> {
+  async replaceAll(data: StoreSnapshot, expected?: StoreSnapshot): Promise<void> {
+    if (STORE_NAMES.some(n => expected?.[n] && JSON.stringify([...this.data.get(n)!.values()]) !== JSON.stringify(expected[n]))) {
+      throw Error('保存中にデータが変更されました。最新の状態で再実行してください')
+    }
     const backup = new Map([...this.data].map(([k, v]) => [k, new Map(v)]))
     try {
       for (const name of STORE_NAMES) {

@@ -52,6 +52,8 @@ class Job(BaseModel):
     ordinal: int = Field(ge=1)
     priority: int = Field(ge=1)
     targets: list[Target]
+    previousEquipmentIds: dict[str, str] = Field(default_factory=dict)
+    previousGemIds: dict[str, str] = Field(default_factory=dict)
 class Request(BaseModel):
     equipment: list[Equipment] = Field(max_length=1500)
     gems: list[Gem] = Field(max_length=1500)
@@ -59,6 +61,7 @@ class Request(BaseModel):
     jobs: list[Job] = Field(max_length=100)
     reservedEquipmentIds: list[str] = Field(default_factory=list)
     reservedGemIds: list[str] = Field(default_factory=list)
+    maxAchieved: int | None = Field(default=None, ge=0, le=100)
     timeLimitSeconds: int = Field(default=60, ge=5, le=1800)
     @model_validator(mode="after")
     def check_ids(self):
@@ -142,7 +145,10 @@ def optimize(data: Request):
     # and priority objective without restricting distinct jobs.
     previous_identical = {}
     for j, job in enumerate(data.jobs):
-        signature = (job.presetId, job.priority, tuple(sorted(job.requiredEquipmentIds)),
+        signature = (job.presetId, job.priority, job.requireEquipment,
+                     tuple(sorted(job.requiredEquipmentIds)),
+                     tuple(sorted(job.previousEquipmentIds.items())),
+                     tuple(sorted(job.previousGemIds.items())),
                      tuple(sorted((t.statId, t.npcBonusStatId or '', scaled(t.minValue)) for t in job.targets)))
         if signature in previous_identical:
             model.Add(active[j] <= active[previous_identical[signature]])
@@ -170,6 +176,8 @@ def optimize(data: Request):
                 model.Add(sum(equipment_terms) + sum(gem_terms) >= minimum * active[j])
     # Lexicographic objective: number of successful builds first, priority second.
     count = sum(active)
+    if data.maxAchieved is not None:
+        model.Add(count <= data.maxAchieved)
     model.Maximize(count)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = data.timeLimitSeconds
@@ -189,14 +197,34 @@ def optimize(data: Request):
         model.Add(count == first_count)
         max_priority = max(job.priority for job in data.jobs)
         weights = [max_priority + 1 - job.priority for job in data.jobs]
-        model.Maximize(sum(weights[j] * active[j] for j in range(n)))
+        # Preserve priority as the dominant tie-break, then retain existing
+        # equipment/gems when equally many builds meet their targets.
+        # Each active job can retain at most 4 equipment and 4 gems.
+        retained = []
+        for j, job in enumerate(data.jobs):
+            for slot, eid in job.previousEquipmentIds.items():
+                var = x.get((j, slot, eid))
+                if var is not None:
+                    retained.append(var)
+            if job.previousEquipmentIds or job.previousGemIds:
+                for slot in SLOTS:
+                    gid = job.previousGemIds.get(slot)
+                    if gid is None:
+                        # An empty slot is also part of the previous assignment.
+                        occupied = sum(y[j, slot, gem.id] for gem in gems_by_slot[slot])
+                        retained.append(active[j] - occupied)
+                    else:
+                        var = y.get((j, slot, gid))
+                        if var is not None:
+                            retained.append(var)
+        model.Maximize((8 * n + 1) * sum(weights[j] * active[j] for j in range(n)) + sum(retained))
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds
         second.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
         second_status = second.Solve(model)
+        final_status = cp_model.OPTIMAL if second_status == cp_model.OPTIMAL else cp_model.FEASIBLE
         if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             best_solver = second
-            final_status = second_status
     builds = []
     for j, job in enumerate(data.jobs):
         if not best_solver.Value(active[j]):
@@ -224,7 +252,7 @@ def optimize(data: Request):
             "overflow": [{"statId": key, "cap": cap / SCALE, "raw": totals[key] / SCALE}
                          for key, cap in caps.items() if totals.get(key, 0) > cap]
         })
-    return {"status": best_solver.StatusName(final_status),
+    return {"status": solver.StatusName(final_status),
             "upperBound": bound,
             "optimal": status == cp_model.OPTIMAL and final_status == cp_model.OPTIMAL,
             "achieved": len(builds), "requested": n, "builds": builds}

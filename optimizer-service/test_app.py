@@ -133,3 +133,63 @@ def test_required_equipment_missing_means_no_build():
     p["jobs"][1]["requiredEquipmentIds"] = []
     result = client.post("/optimize", json=p).json()
     assert result["achieved"] == 0
+
+
+def test_reoptimization_prefers_original_equipment_when_goals_equal():
+    p = payload()
+    p["jobs"][0]["previousEquipmentIds"] = {
+        "helmet": "h2", "weapon": "w2", "armor": "a2", "artifact": "r2"
+    }
+    p["jobs"][1]["previousEquipmentIds"] = {
+        "helmet": "h1", "weapon": "w1", "armor": "a1", "artifact": "r1"
+    }
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 2
+    by_job = {b["ordinal"]: b["equipmentIds"] for b in result["builds"]}
+    assert by_job[1] == p["jobs"][0]["previousEquipmentIds"]
+    assert by_job[2] == p["jobs"][1]["previousEquipmentIds"]
+
+
+def test_partial_reoptimization_can_choose_later_commander_to_retain_gear():
+    p = payload()
+    p["reservedEquipmentIds"] = ["h2"]
+    p["jobs"][1]["previousEquipmentIds"] = {
+        "helmet": "h1", "weapon": "w1", "armor": "a1", "artifact": "r1"
+    }
+    p["jobs"][1]["previousGemIds"] = {"weapon": "g1"}
+    p["gems"] = [{"id": "g1", "allowedSlots": ["helmet", "weapon"], "effects": []}]
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 1
+    build = result["builds"][0]
+    assert build["ordinal"] == 2
+    assert build["equipmentIds"] == p["jobs"][1]["previousEquipmentIds"]
+    assert build["gemAssignments"] == [{"slotType": "weapon", "gemId": "g1"}]
+
+
+def test_roster_capacity_keeps_achievable_jobs_beyond_first_candidate():
+    p = payload()
+    p["maxAchieved"] = 1
+    p["jobs"][0]["targets"][0]["minValue"] = 21
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 1
+    assert result["builds"][0]["ordinal"] == 2
+
+
+def test_reoptimization_prefers_fewer_changes_in_empty_gem_slots():
+    p = payload()
+    p["jobs"] = [p["jobs"][0]]
+    p["jobs"][0]["targets"][0]["minValue"] = 15
+    p["jobs"][0]["previousEquipmentIds"] = {
+        "helmet": "h1", "weapon": "w1", "armor": "a1", "artifact": "r1"
+    }
+    p["gems"] = [
+        {"id": "small1", "allowedSlots": ["helmet"], "effects": [{"statId": "power", "value": 2}]},
+        {"id": "small2", "allowedSlots": ["weapon"], "effects": [{"statId": "power", "value": 3}]},
+        {"id": "large", "allowedSlots": ["armor"], "effects": [{"statId": "power", "value": 5}]},
+    ]
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["builds"][0]["gemAssignments"] == [{"slotType": "armor", "gemId": "large"}]

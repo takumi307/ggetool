@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CASTELLAN_STAT_SEEDS, mergeCastellanStats } from '@/domain/castellanStats'
+import { CASTELLAN_STAT_SEEDS, castellanScoringStats, mergeCastellanStats } from '@/domain/castellanStats'
 import { addEffects, effectiveValue, knownCaps } from '@/domain/effects'
 import { optimizeCastellanPlan } from '@/domain/castellanPlanner'
 import { SLOT_TYPES, type BuildPreset, type Equipment, type Gem } from '@/domain/types'
@@ -21,6 +21,22 @@ describe('castellan caps and assignments', () => {
     expect(mergeCastellanStats([legacy]).find(s => s.id === seed.id)).toEqual(seed)
     const edited = { ...legacy, cap: 90, capStatus: 'known' as const }
     expect(mergeCastellanStats([edited]).find(s => s.id === seed.id)).toEqual(edited)
+  })
+
+  it('renames the built-in front defense effect without resetting an edited cap', () => {
+    const seed = CASTELLAN_STAT_SEEDS.find(s => s.id === 'C008')!
+    const previous = { ...seed, name: '正面部隊の戦闘力', cap: 18 }
+    expect(mergeCastellanStats([previous]).find(s => s.id === seed.id))
+      .toEqual({ ...seed, cap: 18 })
+  })
+
+  it('registers the reinforcement count as a separate uncapped equipment stat', () => {
+    const guardian = CASTELLAN_STAT_SEEDS.find(s => s.id === 'C012')!
+    expect(guardian).toMatchObject({ category: 'equipment', unit: '人', cap: null, capStatus: 'unknown' })
+    const caps = knownCaps(CASTELLAN_STAT_SEEDS)
+    expect(effectiveValue({ C012: 792 }, {}, caps, 'C012')).toBe(792)
+    expect(effectiveValue({ C012: 805 }, {}, caps, 'C012')).toBe(805)
+    expect(castellanScoringStats('npc')).not.toContain(guardian)
   })
 
   it('reserves NPC gear and balances the requested lord builds without duplicates', () => {

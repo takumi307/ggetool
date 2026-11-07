@@ -1,4 +1,4 @@
-import { STORE_KEYS, STORE_NAMES, type Database, type Repository, type StoreName, type StoreSchemas } from './types'
+import { STORE_KEYS, STORE_NAMES, type Database, type Repository, type StoreName, type StoreSchemas, type StoreSnapshot } from './types'
 
 export const DB_NAME = 'e4k-commander-builder'
 /** IndexedDB のスキーマ版（JSONの schemaVersion とは別管理） */
@@ -51,12 +51,17 @@ export class IndexedDbDatabase implements Database {
   }
 
   /** 1トランザクションで置換。途中失敗は abort で全体ロールバック（既存データを壊さない） */
-  async replaceAll(data: Partial<{ [K in StoreName]: StoreSchemas[K][] }>): Promise<void> {
-    const targets = STORE_NAMES.filter((n) => data[n])
+  async replaceAll(data: StoreSnapshot, expected?: StoreSnapshot): Promise<void> {
+    const targets = STORE_NAMES.filter(n => data[n])
     if (!targets.length) return
-    const tx = this.db.transaction(targets, 'readwrite')
+    const checks = STORE_NAMES.filter(n => expected?.[n])
+    const tx = this.db.transaction([...new Set([...targets, ...checks])], 'readwrite')
     const done = txDone(tx)
     try {
+      const current = await Promise.all(checks.map(n => req(tx.objectStore(n).getAll())))
+      if (checks.some((n, i) => JSON.stringify(current[i]) !== JSON.stringify(expected?.[n]))) {
+        throw Error('保存中にデータが変更されました。最新の状態で再実行してください')
+      }
       for (const n of targets) {
         const os = tx.objectStore(n)
         os.clear()

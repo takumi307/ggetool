@@ -16,6 +16,7 @@ export interface StoreSchemas {
   settings: AppSettings
 }
 export type StoreName = keyof StoreSchemas
+export type StoreSnapshot = Partial<{ [K in StoreName]: StoreSchemas[K][] }>
 
 /** 各ストアの keyPath */
 export const STORE_KEYS: Record<StoreName, string> = {
@@ -45,6 +46,6 @@ export interface Repository<T> {
 export interface Database {
   repo<K extends StoreName>(name: K): Repository<StoreSchemas[K]>
   /** 指定ストアを一括置換（Phase 2 のJSON復元で使用。失敗時は全体ロールバック） */
-  replaceAll(data: Partial<{ [K in StoreName]: StoreSchemas[K][] }>): Promise<void>
+  replaceAll(data: StoreSnapshot, expected?: StoreSnapshot): Promise<void>
   close(): void
 }

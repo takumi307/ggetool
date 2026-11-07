@@ -1,9 +1,9 @@
 import { canonicalStatId } from './statAliases'
-import type { BuildPreset, Equipment, Gem, StatDefinition } from './types'
+import type { BuildPreset, Equipment, Gem, SlotType, StatDefinition } from './types'
 import type { OptimizationResult } from './optimizer'
 
 const npcBonusId = (preset: BuildPreset, statId: string): string | undefined => preset.name.includes('援軍特化') && canonicalStatId(statId) === 'S002' ? 'G005' : undefined
-export interface CpSatJob { preset: BuildPreset; ordinal: number; priority: number; commanderId?: string; previousEquipmentIds?: Partial<Record<'helmet' | 'weapon' | 'armor' | 'artifact', string>>; previousGemIds?: string[] }
+export interface CpSatJob { preset: BuildPreset; ordinal: number; priority: number; commanderId?: string; previousEquipmentIds?: Partial<Record<SlotType, string>>; previousGemIds?: Partial<Record<SlotType, string>> }
 export interface CpSatBuild { job: CpSatJob; result: OptimizationResult }
 export interface CpSatOutcome {
   status: string
@@ -40,6 +40,7 @@ export async function optimizeCpSat(input: {
   reservedEquipmentIds: string[]
   reservedGemIds: string[]
   timeLimitSeconds: number
+  maxAchieved?: number
   signal?: AbortSignal
   endpoint?: string
   onProgress?: (message: string) => void
@@ -58,13 +59,14 @@ export async function optimizeCpSat(input: {
       stats: input.stats,
       jobs: input.jobs.map(j => ({
         presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
-        previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? [],
+        previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
         requireEquipment: Boolean(j.preset.requiredEquipmentStatId || j.preset.requiredEquipmentKeyword?.trim()),
         requiredEquipmentIds: j.preset.requiredEquipmentStatId ? input.equipment.filter(e => e.effects.some(x => canonicalStatId(x.statId) === canonicalStatId(j.preset.requiredEquipmentStatId!) && x.value > 0)).map(e => e.id) : j.preset.requiredEquipmentKeyword?.trim() ? input.equipment.filter(e => e.name.includes(j.preset.requiredEquipmentKeyword!.trim())).map(e => e.id) : [],
         targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
       })),
       reservedEquipmentIds: input.reservedEquipmentIds,
       reservedGemIds: input.reservedGemIds,
+      maxAchieved: input.maxAchieved,
       timeLimitSeconds: input.timeLimitSeconds
     })
   })

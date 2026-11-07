@@ -149,3 +149,30 @@ def test_reoptimization_prefers_original_equipment_when_goals_equal():
     by_job = {b["ordinal"]: b["equipmentIds"] for b in result["builds"]}
     assert by_job[1] == p["jobs"][0]["previousEquipmentIds"]
     assert by_job[2] == p["jobs"][1]["previousEquipmentIds"]
+
+
+def test_partial_reoptimization_can_choose_later_commander_to_retain_gear():
+    p = payload()
+    p["reservedEquipmentIds"] = ["h2"]
+    p["jobs"][1]["previousEquipmentIds"] = {
+        "helmet": "h1", "weapon": "w1", "armor": "a1", "artifact": "r1"
+    }
+    p["jobs"][1]["previousGemIds"] = {"weapon": "g1"}
+    p["gems"] = [{"id": "g1", "allowedSlots": ["helmet", "weapon"], "effects": []}]
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 1
+    build = result["builds"][0]
+    assert build["ordinal"] == 2
+    assert build["equipmentIds"] == p["jobs"][1]["previousEquipmentIds"]
+    assert build["gemAssignments"] == [{"slotType": "weapon", "gemId": "g1"}]
+
+
+def test_roster_capacity_keeps_achievable_jobs_beyond_first_candidate():
+    p = payload()
+    p["maxAchieved"] = 1
+    p["jobs"][0]["targets"][0]["minValue"] = 21
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["achieved"] == 1
+    assert result["builds"][0]["ordinal"] == 2

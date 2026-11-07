@@ -1,0 +1,8 @@
+{
+  "name": "ggetool",
+  "compatibility_date": "2026-11-07",
+  "assets": {
+    "directory": "./dist"
+  },
+  "previews": {}
+}

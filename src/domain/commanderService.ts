@@ -1,6 +1,8 @@
 import { SLOT_TYPES, type CommanderBuild, type Equipment, type Gem, type SlotType } from './types'
-import type { Database } from '@/repositories/types'
+import type { Database, StoreSnapshot } from '@/repositories/types'
 import type { OptimizationResult } from './optimizer'
+
+export const MAX_COMMANDERS = 35
 
 /** Persist build and allocations together; IndexedDB replaceAll uses one transaction. */
 export async function saveCommander(db: Database, name: string, presetId: string, result: OptimizationResult): Promise<CommanderBuild> {
@@ -22,7 +24,7 @@ export async function saveCommander(db: Database, name: string, presetId: string
   }
   if (new Set(result.gemAssignments.map(a => a.slotType)).size !== result.gemAssignments.length) throw Error('同じ部位に複数のジェムは装着できません')
   const usedPositions = new Set(commanders.map(c => commanderNumber(c, commanders)).filter((n): n is number => n !== undefined))
-  const position = Array.from({length:35}, (_,i)=>i+1).find(n=>!usedPositions.has(n))
+  const position = Array.from({length:MAX_COMMANDERS}, (_,i)=>i+1).find(n=>!usedPositions.has(n))
   if (!position) throw Error('司令官は35体までです。空き番号がありません')
   const id = crypto.randomUUID(), now = new Date().toISOString()
   const equipmentIds = Object.fromEntries(chosen.map(v => [v.slot, v.id])) as Partial<Record<SlotType, string>>
@@ -34,7 +36,7 @@ export async function saveCommander(db: Database, name: string, presetId: string
     commanders: [...commanders, build],
     equipmentAllocations: [...eqAlloc, ...chosen.map(v => ({ equipmentId: v.id as string, commanderBuildId: id, slotType: v.slot, allocatedAt: now }))],
     gemAllocations: [...gemAlloc, ...result.gemAssignments.map(a => ({ gemId: a.gemId, commanderBuildId: id, slotType: a.slotType, allocatedAt: now }))]
-  })
+  }, { commanders, equipment, gems, equipmentAllocations: eqAlloc, gemAllocations: gemAlloc })
   return build
 }
 export async function deleteCommander(db: Database, id: string): Promise<void> {
@@ -46,16 +48,16 @@ export async function deleteCommander(db: Database, id: string): Promise<void> {
     commanders: commanders.filter(c => c.id !== id),
     equipmentAllocations: eqAlloc.filter(a => a.commanderBuildId !== id),
     gemAllocations: gemAlloc.filter(a => a.commanderBuildId !== id)
-  })
+  }, { commanders, equipmentAllocations: eqAlloc, gemAllocations: gemAlloc })
 }
 
 /** Stable physical position on the game's 1–35 commander roster. */
 export function commanderNumber(build: CommanderBuild, all: CommanderBuild[]): number | undefined {
-  if (Number.isInteger(build.position) && build.position! >= 1 && build.position! <= 35) return build.position
-  const taken = new Set(all.map(b => b.position).filter((n): n is number => Number.isInteger(n) && n! >= 1 && n! <= 35))
+  if (Number.isInteger(build.position) && build.position! >= 1 && build.position! <= MAX_COMMANDERS) return build.position
+  const taken = new Set(all.map(b => b.position).filter((n): n is number => Number.isInteger(n) && n! >= 1 && n! <= MAX_COMMANDERS))
   const legacy = [...all].filter(b => !b.position).sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
   for (const b of legacy) {
-    const next = Array.from({ length: 35 }, (_,i) => i + 1).find(n => !taken.has(n))
+    const next = Array.from({ length: MAX_COMMANDERS }, (_,i) => i + 1).find(n => !taken.has(n))
     if (!next) break
     if (b.id === build.id) return next
     taken.add(next)
@@ -64,17 +66,17 @@ export function commanderNumber(build: CommanderBuild, all: CommanderBuild[]): n
 }
 
 export async function setCommanderPosition(db: Database, id: string, position: number): Promise<void> {
-  if (!Number.isInteger(position) || position < 1 || position > 35) throw Error('司令官番号は1〜35で指定してください')
+  if (!Number.isInteger(position) || position < 1 || position > MAX_COMMANDERS) throw Error('司令官番号は1〜35で指定してください')
   const builds = await db.repo('commanders').getAll()
   const build = builds.find(b => b.id === id)
   if (!build) throw Error('司令官が見つかりません')
   if (builds.some(b => b.id !== id && commanderNumber(b, builds) === position)) throw Error('この番号は別の司令官が使用中です')
-  await db.repo('commanders').put({ ...build, position })
+  await db.replaceAll({ commanders: builds.map(b => b.id === id ? { ...b, position } : b) }, { commanders: builds })
 }
 export async function setCommanderLocked(db: Database, id: string, locked: boolean): Promise<void> {
-  const build = await db.repo('commanders').get(id)
-  if (!build) throw Error('司令官が見つかりません')
-  await db.repo('commanders').put({ ...build, locked })
+  const builds = await db.repo('commanders').getAll()
+  if (!builds.some(b => b.id === id)) throw Error('司令官が見つかりません')
+  await db.replaceAll({ commanders: builds.map(b => b.id === id ? { ...b, locked } : b) }, { commanders: builds })
 }
 
 export interface ReplacementBuild {
@@ -87,7 +89,7 @@ export interface ReplacementBuild {
 }
 /** One IndexedDB transaction replaces all affected allocations or none.
  * Reject stale previews, locked commanders, and every conflicting item. */
-export async function replaceCommanderAssignments(db: Database, replacements: ReplacementBuild[]): Promise<void> {
+export async function replaceCommanderAssignments(db: Database, replacements: ReplacementBuild[], inputs?: Pick<StoreSnapshot, 'equipment' | 'gems' | 'stats' | 'presets'>): Promise<void> {
   if (!replacements.length) throw Error('保存する変更がありません')
   const [builds, equipment, gems, eqAlloc, gemAlloc] = await Promise.all([
     db.repo('commanders').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(),
@@ -136,5 +138,5 @@ export async function replaceCommanderAssignments(db: Database, replacements: Re
     commanders: builds.map(b => updated.get(b.id) ?? b),
     equipmentAllocations: [...eqAlloc.filter(a => !ids.has(a.commanderBuildId)), ...newEq],
     gemAllocations: [...gemAlloc.filter(a => !ids.has(a.commanderBuildId)), ...newGem]
-  })
+  }, { equipment, gems, ...inputs, commanders: builds, equipmentAllocations: eqAlloc, gemAllocations: gemAlloc })
 }

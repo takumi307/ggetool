@@ -64,6 +64,13 @@ try {
   const card = name => page.locator('.v-card').filter({ has: link(name) })
   const visible = locator => locator.waitFor({ state: 'visible' })
 
+  await page.goto(root + '/#/')
+  await visible(page.getByRole('heading', { name: 'ダッシュボード', exact: true }))
+  await link('鎧を登録').click()
+  await page.waitForURL(root + '/#/equipment/edit?slot=armor')
+  await visible(page.getByRole('combobox', { name: '装備部位', exact: true }))
+  assert.equal(await page.getByRole('combobox', { name: '装備部位', exact: true }).inputValue(), '鎧')
+
   await page.goto(root + '/#/backup')
   await page.locator('input[type=file]').setInputFiles({
     name: 'reoptimization-fixture.json',
@@ -146,6 +153,7 @@ try {
       presets: [{
         ...fixture.stores.presets[0], name: '城代検証', targets: [{ statId: 'C001', minValue: 50 }],
       }],
+      plans: [{ id: 'castellan-plan', presetId: 'test-preset', count: 2, priority: 1, enabled: true }],
       commanders: [], equipmentAllocations: [], gemAllocations: [],
     },
   }
@@ -155,6 +163,10 @@ try {
   await visible(link('復元しました'))
   await link('最適化実行').click()
   await visible(heading('城代の最適化'))
+  await visible(button('CP-SATで新規作成'))
+  await select('最適化モード').press('ArrowDown')
+  await option('1体だけ作る').click()
+  await visible(link('防御時の乱闘兵の戦闘力：50%以上'))
   await button('最適化を実行').click()
   await visible(page.getByText('防御時の乱闘兵の戦闘力：55 / 50', { exact: false }))
   await page.getByRole('textbox', { name: '城代名', exact: true }).fill('検証城代')

@@ -236,3 +236,15 @@ def test_castellan_uses_shared_courtyard_and_separate_wall_gem_caps():
         p["jobs"][0]["targets"][i]["minValue"] += 1
         assert client.post("/optimize", json=p).json()["achieved"] == 0
         p["jobs"][0]["targets"][i]["minValue"] -= 1
+
+def test_job_submission_is_idempotent():
+    p = payload()
+    p["requestId"] = "ab" * 16
+    first = client.post("/jobs", json=p)
+    repeated = client.post("/jobs", json=p)
+    assert first.status_code == repeated.status_code == 202
+    assert first.json()["jobId"] == repeated.json()["jobId"] == p["requestId"]
+    changed = {**p, "timeLimitSeconds": 20}
+    assert client.post("/jobs", json=changed).status_code == 409
+    from app import _executor
+    _executor.submit(lambda: None).result(timeout=15)

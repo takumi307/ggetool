@@ -9,7 +9,8 @@ import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignments } from '@/domain/commanderService'
 import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob } from '@/domain/cpSatClient'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type EquipmentAllocation, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
-import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
+import { type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
+import { runOptimizeSingle } from '@/domain/optimizerRunner'
 
 const db = useDb()
 const app = useAppStore()
@@ -143,21 +144,25 @@ async function run() {
   if (usesCpSat.value) { await runPlans(); return }
   if (!preset.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
+  const search = new AbortController()
+  controller.value = search
   try {
     const [usedEq, usedGem] = await Promise.all([
       db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
     ])
     equipmentAllocations.value = usedEq
-    // Yield once to let the progress indicator render.
-    await new Promise(resolve => setTimeout(resolve, 0))
-    result.value = optimizeSingle({
+    result.value = await runOptimizeSingle({
       equipment: equipment.value, gems: gems.value, stats: stats.value, preset: preset.value,
       reservedEquipmentIds: usedEq.map(a => a.equipmentId), reservedGemIds: usedGem.map(a => a.gemId),
       mode: mode.value
-    })
-    if (!result.value) message.value = '各部位に未使用の装備が1件以上必要です'
+    }, search.signal)
+    if (!result.value) message.value = (preset.value.requiredEquipmentStatId || preset.value.requiredEquipmentKeyword?.trim())
+      ? '各部位に未使用の装備が1件以上必要です。また、このプリセットの必須武具条件を満たす未使用の武具が必要です'
+      : '各部位に未使用の装備が1件以上必要です'
     else commanderName.value = (preset.value?.name ?? roleLabel) + ' ' + new Date().toLocaleDateString('ja-JP')
-  } catch (e) { message.value = String(e) } finally { running.value = false }
+  } catch (e) {
+    message.value = e instanceof DOMException && e.name === 'AbortError' ? '探索を中止しました。' : String(e)
+  } finally { running.value = false; controller.value = null }
 }
 async function runPlans() {
   if (running.value) return
@@ -353,7 +358,7 @@ async function saveCpSat() {
     </details>
     <div class="d-flex align-center ga-2 flex-wrap">
       <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ usesCpSat ? (reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成') : '最適化を実行' }}</v-btn>
-      <v-btn v-if="running && usesCpSat" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
+      <v-btn v-if="running" color="warning" variant="outlined" @click="controller?.abort()">{{ usesCpSat ? '待機を中断' : '探索を中止' }}</v-btn>
     </div>
   </v-card>
   <v-progress-linear v-else-if="!message" indeterminate />
@@ -443,7 +448,7 @@ async function saveCpSat() {
       <h3 class="text-subtitle-1 mt-3 mb-2">全ステータス</h3>
       <div v-for="(value, id) in result.totals" :key="id">{{ statName(String(id)) }}：{{ value }}</div>
       <v-alert v-if="result.overflow.length" type="warning" variant="tonal" class="mt-3">
-        上限超過：{{ result.overflow.map(s => statName(s.statId) + ' ' + s.raw + ' / ' + s.cap).join('、') }}
+        装備の上限超過：{{ result.overflow.map(s => statName(s.statId) + ' ' + s.raw + ' / ' + s.cap).join('、') }}
       </v-alert>
     </v-card>
   </template>

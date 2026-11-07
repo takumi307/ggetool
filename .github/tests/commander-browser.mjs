@@ -135,7 +135,7 @@ try {
   await visible(link('Error: 司令官タブでこのバックアップを復元してください'))
   assert.equal(await button('確認して全件置換').count(), 0)
 
-  const defenseStat = { ...makeStat('C001', 'equipment'), name: '防御時の乱闘兵の戦闘力' }
+  const defenseStat = { ...makeStat('C001', 'equipment'), name: '防御時の乱闘兵の戦闘力', capStatus: 'known', cap: 35 }
   const defenseGemStat = { ...makeStat('CG001', 'gem'), name: '防御時の乱闘兵の戦闘力（ジェム）' }
   const castellanFixture = {
     ...fixture, workspace: 'castellan',
@@ -167,16 +167,24 @@ try {
   await select('最適化モード').press('ArrowDown')
   await option('1体だけ作る').click()
   await visible(link('防御時の乱闘兵の戦闘力：50%以上'))
+  const workerStarted = page.waitForEvent('worker')
   await button('最適化を実行').click()
-  await visible(page.getByText('防御時の乱闘兵の戦闘力：55 / 50', { exact: false }))
+  await workerStarted
+  await visible(page.getByText('防御時の乱闘兵の戦闘力：50 / 50', { exact: false }))
   await page.getByRole('textbox', { name: '城代名', exact: true }).fill('検証城代')
   await button('この構成を保存して装備を確保').click()
   await visible(page.getByText('「検証城代」を保存しました', { exact: false }))
   await link('保存済み城代を確認').click()
   await visible(heading('保存済み城代'))
   await page.reload()
-  await visible(card('検証城代').getByText(/兜：defense-helmet/))
+  const castellanCard = card('検証城代')
+  await visible(castellanCard.getByText(/兜：defense-helmet/))
+  await castellanCard.getByText('結果の詳細', { exact: true }).click()
+  await visible(heading('最適化結果'))
+  await visible(page.getByText('防御時の乱闘兵の戦闘力：50 / 50', { exact: false }))
   await tab('司令官').click()
+  await visible(heading('最適化結果'))
+  await link('保存済み司令官').click()
   await visible(heading('保存済み司令官'))
   await visible(card('検証-locked').getByText(/兜：locked-helmet/))
   assert.equal(await card('検証城代').count(), 0)

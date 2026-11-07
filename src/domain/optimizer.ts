@@ -1,4 +1,5 @@
 import { canonicalStatId } from './statAliases'
+import { addEffects, knownCaps, requiredEquipmentMatcher, targetActual } from './effects'
 import { SLOT_TYPES, type BuildPreset, type Equipment, type Gem, type SlotType, type StatDefinition } from './types'
 
 export interface OptimizationResult {
@@ -27,28 +28,37 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   const availableSlots = SLOT_TYPES.map(slot => input.equipment.filter(e => e.slotType === slot && !reservedEq.has(e.id)))
   if (availableSlots.some(s => !s.length)) return null
   const availableGems = input.gems.filter(g => !reservedGem.has(g.id))
-  const caps = new Map(input.stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap as number]))
+  const caps = knownCaps(input.stats)
+  const matchesRequired = requiredEquipmentMatcher(input.preset)
+  if (matchesRequired && !availableSlots.some(slot => slot.some(matchesRequired))) return null
   const countEstimate = availableSlots.reduce((n, group) => n * group.length, 1) * Math.pow(availableGems.length + 1, 4)
   const mode: OptimizerMode = input.mode === 'precise' || input.mode === 'fast' ? input.mode
     : countEstimate <= 100000 ? 'precise' : 'fast'
   const max = Math.max(1, Math.floor(input.maxEvaluations ?? (mode === 'precise' ? 1000000 : 50000)))
   // Fast mode uses a heuristic shortlist. It never claims exact optimality.
-  const priorities = [...new Set(input.preset.targets.map(t => t.statId))]
+  const npcGem = input.preset.name.includes('援軍特化')
+  const priorities = [...new Set(input.preset.targets.map(t => canonicalStatId(t.statId)))]
   const rank = (effects: { statId: string; value: number }[]) => effects.reduce((sum, e) => {
-    const i = priorities.map(canonicalStatId).indexOf(canonicalStatId(e.statId))
+    const id = canonicalStatId(e.statId)
+    const i = priorities.indexOf(npcGem && id === 'G005' ? 'S002' : id)
     return sum + (i < 0 ? 0 : e.value * Math.pow(2, Math.min(12, priorities.length - i)))
   }, 0)
-  const slots = mode === 'fast' ? availableSlots.map(group =>
-    [...group].sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 6)) : availableSlots
+  const slots = mode === 'fast' ? availableSlots.map(group => {
+    const sorted = [...group].sort((a, b) => rank(b.effects) - rank(a.effects))
+    const top = sorted.slice(0, 6)
+    // Preserve a required-equipment candidate in every compatible shortlist.
+    if (matchesRequired && !top.some(matchesRequired)) {
+      const required = sorted.find(matchesRequired)
+      if (required) top[top.length - 1] = required
+    }
+    return top
+  }) : availableSlots
   const gems = mode === 'fast'
     ? availableGems.filter(g => g.allowedSlots.length).sort((a, b) => rank(b.effects) - rank(a.effects)).slice(0, 12)
     : availableGems
-  const add = (totals: Record<string, number>, effects: { statId: string; value: number }[]) => {
-    for (const effect of effects) totals[canonicalStatId(effect.statId)] = (totals[canonicalStatId(effect.statId)] ?? 0) + effect.value
-  }
-  const capped = (id: string, equipmentTotals: Record<string, number>, gemTotals: Record<string, number>) => Math.min(equipmentTotals[id] ?? 0, caps.get(id) ?? Infinity) + (gemTotals[id] ?? 0)
+  const add = addEffects
   const score = (equipmentTotals: Record<string, number>, gemTotals: Record<string, number>) => {
-    const misses = input.preset.targets.map(t => Math.max(0, t.minValue - capped(canonicalStatId(t.statId), equipmentTotals, gemTotals)))
+    const misses = input.preset.targets.map(t => Math.max(0, t.minValue - targetActual(input.preset, t.statId, equipmentTotals, gemTotals, caps)))
     const totalMiss = misses.reduce((a, b) => a + b, 0)
     // Evaluate only whether minimum targets are met and how far short they are.
     return [misses.every(m => m === 0) ? 1 : 0, -totalMiss]
@@ -78,16 +88,16 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
     const s = score(equipmentTotals, gemTotals)
     if (bestScore && !better(s, bestScore)) return
     bestScore = s
-    const shortfalls = input.preset.targets.map(t => ({
-      statId: t.statId, required: t.minValue, actual: capped(canonicalStatId(t.statId), equipmentTotals, gemTotals),
-      missing: Math.max(0, t.minValue - capped(canonicalStatId(t.statId), equipmentTotals, gemTotals))
-    }))
+    const shortfalls = input.preset.targets.map(t => {
+      const actual = targetActual(input.preset, t.statId, equipmentTotals, gemTotals, caps)
+      return { statId: t.statId, required: t.minValue, actual, missing: Math.max(0, t.minValue - actual) }
+    })
     bestState.value = {
       equipmentIds: Object.fromEntries(selected.map(e => [e.slotType, e.id])),
       gemAssignments: assignments.map(a => ({ ...a })),
       totals: { ...totals },
       shortfalls,
-      overflow: [...caps].filter(([id, cap]) => (totals[id] ?? 0) > cap).map(([statId, cap]) => ({ statId, cap, raw: totals[statId] })),
+      overflow: [...caps].filter(([id, cap]) => (equipmentTotals[id] ?? 0) > cap).map(([statId, cap]) => ({ statId, cap, raw: equipmentTotals[statId] })),
       evaluated, approximate: false
     }
   }
@@ -107,7 +117,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   }
   function assignEquipment(i: number) {
     if (stopped) return
-    if (i === SLOT_TYPES.length) { assignGems(0); return }
+    if (i === SLOT_TYPES.length) { if (!matchesRequired || selected.some(matchesRequired)) assignGems(0); return }
     for (const e of slots[i]) {
       selected.push(e); assignEquipment(i + 1); selected.pop()
       if (stopped) return

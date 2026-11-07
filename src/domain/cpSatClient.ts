@@ -1,8 +1,8 @@
 import { canonicalStatId } from './statAliases'
+import { addEffects, knownCaps, npcBonusId, requiredEquipmentMatcher, targetActual, type Totals } from './effects'
 import type { BuildPreset, Equipment, Gem, SlotType, StatDefinition } from './types'
 import type { OptimizationResult } from './optimizer'
 
-const npcBonusId = (preset: BuildPreset, statId: string): string | undefined => preset.name.includes('援軍特化') && canonicalStatId(statId) === 'S002' ? 'G005' : undefined
 export interface CpSatJob { preset: BuildPreset; ordinal: number; priority: number; commanderId?: string; previousEquipmentIds?: Partial<Record<SlotType, string>>; previousGemIds?: Partial<Record<SlotType, string>> }
 export interface CpSatBuild { job: CpSatJob; result: OptimizationResult }
 export interface CpSatOutcome {
@@ -60,8 +60,8 @@ export async function optimizeCpSat(input: {
       jobs: input.jobs.map(j => ({
         presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
         previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
-        requireEquipment: Boolean(j.preset.requiredEquipmentStatId || j.preset.requiredEquipmentKeyword?.trim()),
-        requiredEquipmentIds: j.preset.requiredEquipmentStatId ? input.equipment.filter(e => e.effects.some(x => canonicalStatId(x.statId) === canonicalStatId(j.preset.requiredEquipmentStatId!) && x.value > 0)).map(e => e.id) : j.preset.requiredEquipmentKeyword?.trim() ? input.equipment.filter(e => e.name.includes(j.preset.requiredEquipmentKeyword!.trim())).map(e => e.id) : [],
+        requireEquipment: Boolean(requiredEquipmentMatcher(j.preset)),
+        requiredEquipmentIds: (() => { const match = requiredEquipmentMatcher(j.preset); return match ? input.equipment.filter(match).map(e => e.id) : [] })(),
         targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
       })),
       reservedEquipmentIds: input.reservedEquipmentIds,
@@ -109,8 +109,8 @@ export async function optimizeCpSat(input: {
       if (!id || !eq.has(id) || eq.get(id)?.slotType !== slot || reservedEq.has(id) || usedEq.has(id)) throw new Error('装備の割当が不正です')
       usedEq.add(id)
     }
-    if (job.preset.requiredEquipmentStatId && !slots.some(slot => eq.get(b.equipmentIds[slot]!)?.effects.some(x => canonicalStatId(x.statId) === canonicalStatId(job.preset.requiredEquipmentStatId!) && x.value > 0))) throw new Error('必須装備効果を持つ武具が含まれていません')
-    if (!job.preset.requiredEquipmentStatId && job.preset.requiredEquipmentKeyword?.trim() && !slots.some(slot => eq.get(b.equipmentIds[slot]!)?.name.includes(job.preset.requiredEquipmentKeyword!.trim()))) throw new Error('必須装備の条件を満たしていません')
+    const matchesRequired = requiredEquipmentMatcher(job.preset)
+    if (matchesRequired && !slots.some(slot => matchesRequired(eq.get(b.equipmentIds[slot]!)!))) throw new Error('必須装備の条件を満たしていません')
     const gemSlots = new Set<string>()
     for (const a of b.gemAssignments) {
       const gem = gems.get(a.gemId)
@@ -119,33 +119,21 @@ export async function optimizeCpSat(input: {
       gemSlots.add(a.slotType); usedGem.add(a.gemId)
     }
     // Recalculate from local equipment to avoid trusting arbitrary API totals.
-    const totals: Record<string, number> = {}
-    const add = (effects: { statId: string; value: number }[]) => {
-      for (const e of effects) totals[canonicalStatId(e.statId)] = (totals[canonicalStatId(e.statId)] ?? 0) + e.value
-    }
-    for (const slot of slots) add(eq.get(b.equipmentIds[slot]!)!.effects)
-    for (const a of b.gemAssignments) add(gems.get(a.gemId)!.effects)
-    const caps = new Map(input.stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap!]))
-    const equipmentTotals: Record<string, number> = {}
-    const gemTotals: Record<string, number> = {}
-    const addTo = (target: Record<string, number>, effects: { statId: string; value: number }[]) => {
-      for (const e of effects) {
-        const id = canonicalStatId(e.statId)
-        target[id] = (target[id] ?? 0) + e.value
-      }
-    }
-    for (const slot of slots) addTo(equipmentTotals, eq.get(b.equipmentIds[slot]!)!.effects)
-    for (const a of b.gemAssignments) addTo(gemTotals, gems.get(a.gemId)!.effects)
+    const caps = knownCaps(input.stats)
+    const totals: Totals = {}
+    const equipmentTotals: Totals = {}
+    const gemTotals: Totals = {}
+    for (const slot of slots) { const effects = eq.get(b.equipmentIds[slot]!)!.effects; addEffects(totals, effects); addEffects(equipmentTotals, effects) }
+    for (const a of b.gemAssignments) { const effects = gems.get(a.gemId)!.effects; addEffects(totals, effects); addEffects(gemTotals, effects) }
     const shortfalls = job.preset.targets.map(t => {
-      const id = canonicalStatId(t.statId)
-      const actual = Math.min(equipmentTotals[id] ?? 0, caps.get(id) ?? Infinity) + (gemTotals[id] ?? 0) + (gemTotals[npcBonusId(job.preset, t.statId) ?? ''] ?? 0)
+      const actual = targetActual(job.preset, t.statId, equipmentTotals, gemTotals, caps)
       return { statId: t.statId, required: t.minValue, actual, missing: Math.max(0, t.minValue - actual - 1e-8) }
     })
     if (shortfalls.some(s => s.missing > 1e-8)) throw new Error('APIの候補が最低目標を満たしていません')
     builds.push({ job, result: {
       equipmentIds: b.equipmentIds, gemAssignments: b.gemAssignments, totals, shortfalls,
-      overflow: [...caps].filter(([id, cap]) => (totals[id] ?? 0) > cap)
-        .map(([statId, cap]) => ({ statId, cap, raw: totals[statId] })),
+      overflow: [...caps].filter(([id, cap]) => (equipmentTotals[id] ?? 0) > cap)
+        .map(([statId, cap]) => ({ statId, cap, raw: equipmentTotals[statId] })),
       evaluated: 0, approximate: !data.optimal
     } })
   }

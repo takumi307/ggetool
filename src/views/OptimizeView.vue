@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch } from 'vue'
+import { onMounted, ref, computed, watch, onBeforeUnmount } from 'vue'
 import { canonicalStatId } from '@/domain/statAliases'
 import { useRoute } from 'vue-router'
 import type { StoreSnapshot } from '@/repositories/types'
@@ -8,7 +8,10 @@ import { saveCommander, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignm
 import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob } from '@/domain/cpSatClient'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
 import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
+
+const db = useDb()
 const app = useAppStore()
+const { roleLabel } = app
 const route = useRoute()
 const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const plans = ref<BuildPlan[]>([])
@@ -25,6 +28,7 @@ const timeLimitSeconds = ref(60)
 const executionMode = ref<'render' | 'local'>('render')
 const localEndpoint = 'http://127.0.0.1:8765'
 const controller = ref<AbortController | null>(null)
+onBeforeUnmount(() => controller.value?.abort())
 const committing = ref(false)
 const allocationMode = ref<'new' | 'selected' | 'all'>('new')
 const existingCommanders = ref<CommanderBuild[]>([])
@@ -51,7 +55,7 @@ const canSaveCpSat = computed(() => {
   return builds.length === targetCommanders.value.length && targetCommanders.value.every(c => ids.has(c.id))
 })
 const commanderChoices = computed(() => eligibleCommanders.value.map(c => ({
-  title: '司令官 ' + (commanderNumber(c, existingCommanders.value) ?? '未設定') + '：' + c.name, value: c.id
+  title: roleLabel + ' ' + (commanderNumber(c, existingCommanders.value) ?? '未設定') + '：' + c.name, value: c.id
 })))
 
 const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))
@@ -76,7 +80,6 @@ const effectText = (id: string, value: number) => `${statName(id)}：${value}${s
 const itemEffects = (slot: SlotType, r: OptimizationResult) => equipment.value.find(e => e.id === r.equipmentIds[slot])?.effects ?? []
 const gemEffects = (slot: SlotType, r: OptimizationResult) => gems.value.find(g => g.id === r.gemAssignments.find(a => a.slotType === slot)?.gemId)?.effects ?? []
 onMounted(async () => {
-  const db = useDb()
   ;[presets.value, equipment.value, gems.value, stats.value, plans.value] = await Promise.all([
     db.repo('presets').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll(), db.repo('plans').getAll()
   ])
@@ -90,10 +93,10 @@ async function saveResult() {
   if (!result.value || !preset.value) return
   saving.value = true; message.value = ''; saved.value = ''
   try {
-    const build = await saveCommander(useDb(), commanderName.value, preset.value.id, result.value)
+    const build = await saveCommander(db, commanderName.value, preset.value.id, result.value)
     saved.value = '「' + build.name + '」を保存しました。装備・ジェムは使用中として確保されます。'
     result.value = null
-    await app.refreshCounts()
+    await app.refreshCounts(db)
   } catch (e) { message.value = String(e) } finally { saving.value = false }
 }
 async function run() {
@@ -102,7 +105,6 @@ async function run() {
   if (!preset.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
   try {
-    const db = useDb()
     const [usedEq, usedGem] = await Promise.all([
       db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
     ])
@@ -114,7 +116,7 @@ async function run() {
       mode: mode.value
     })
     if (!result.value) message.value = '各部位に未使用の装備が1件以上必要です'
-    else commanderName.value = (preset.value?.name ?? '司令官') + ' ' + new Date().toLocaleDateString('ja-JP')
+    else commanderName.value = (preset.value?.name ?? roleLabel) + ' ' + new Date().toLocaleDateString('ja-JP')
   } catch (e) { message.value = String(e) } finally { running.value = false }
 }
 async function runPlans() {
@@ -123,7 +125,6 @@ async function runPlans() {
   batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null; zeroDiagnostics.value = []; missingSlots.value = []
   controller.value = new AbortController()
   try {
-    const db = useDb()
     const [commanders, usedEq, usedGem, currentEquipment, currentGems, currentStats, currentPresets] = await Promise.all([
       db.repo('commanders').getAll(), db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll(),
       db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll(), db.repo('presets').getAll()
@@ -136,11 +137,11 @@ async function runPlans() {
     const targets = targetCommanders.value
     const freePositions = Math.max(0, MAX_COMMANDERS - commanders.length)
     if (allocationMode.value === 'new' && !freePositions) {
-      message.value = '司令官の空き番号がありません。'
+      message.value = roleLabel + 'の空き番号がありません。'
       return
     }
     if (allocationMode.value !== 'new' && !targets.length) {
-      message.value = '再最適化する司令官がありません。対象を選ぶか、ロックを解除してください。'; return
+      message.value = '再最適化する' + roleLabel + 'がありません。対象を選ぶか、ロックを解除してください。'; return
     }
     const jobs: CpSatJob[] = allocationMode.value === 'new'
       ? activePlans.value.flatMap(plan => {
@@ -200,7 +201,7 @@ async function runPlans() {
       }))
     }
     if (allocationMode.value === 'new' && response.builds.length > freePositions) {
-      throw Error('最適化サーバーを最新版に更新してから再実行してください。結果が司令官の空き枠を超えています。')
+      throw Error('最適化サーバーを最新版に更新してから再実行してください。結果が' + roleLabel + 'の空き枠を超えています。')
     }
     previewInputs = { equipment: currentEquipment, gems: currentGems, stats: currentStats, presets: currentPresets }
     cpSatPreview.value = response.builds
@@ -219,7 +220,6 @@ async function saveCpSat() {
   committing.value = true; message.value = ''; saved.value = ''
   let count = 0
   try {
-    const db = useDb()
     if (allocationMode.value !== 'new') {
       await replaceCommanderAssignments(db, cpSatPreview.value.map(entry => ({
         commanderId: entry.job.commanderId!,
@@ -232,7 +232,7 @@ async function saveCpSat() {
       saved.value = `${cpSatPreview.value.length}体を一括更新しました（変更した装備・ジェムの割当：${movedItems.value}箇所）`
       cpSatPreview.value = []
       existingCommanders.value = await db.repo('commanders').getAll()
-      await app.refreshCounts()
+      await app.refreshCounts(db)
       return
     }
     for (const entry of cpSatPreview.value) {
@@ -241,32 +241,32 @@ async function saveCpSat() {
       batchResults.value.push({ name, preset: entry.job.preset.name, result: entry.result })
       count++
     }
-    saved.value = `${count}体の司令官を保存しました`
+    saved.value = `${count}体の${roleLabel}を保存しました`
     cpSatPreview.value = []
-    await app.refreshCounts()
+    await app.refreshCounts(db)
   } catch (e) {
     cpSatPreview.value = []
     message.value = `${count}体を保存したところで停止しました：${String(e)}。再最適化してください。`
-    await app.refreshCounts()
+    await app.refreshCounts(db)
   } finally { committing.value = false }
 }
 
 </script>
 <template>
-  <h2 class="text-h6 mb-3">司令官の最適化</h2>
+  <h2 class="text-h6 mb-3">{{ roleLabel }}の最適化</h2>
   <v-alert type="info" variant="tonal" class="mb-4">4部位の装備と、各部位に最大1個のジェムを組み合わせます。装備・ジェムは重複使用しません。目標達成を優先し、その後に指定した効果を優先順位順で比較します。</v-alert>
-  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効な計画の不足分を、司令官35枠の空き数までCP-SATで同時に最適化します。計算結果を確認してから保存できます。OPTIMALは最適性証明済み、FEASIBLEは暫定解です。通常モードでは既存の司令官は変更しません。</v-alert>
+  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効な計画の不足分を、{{ roleLabel }}35枠の空き数までCP-SATで同時に最適化します。計算結果を確認してから保存できます。OPTIMALは最適性証明済み、FEASIBLEは暫定解です。通常モードでは既存の{{ roleLabel }}は変更しません。</v-alert>
   <v-select v-if="activePlans.length || eligibleCommanders.length" v-model="allocationMode" :disabled="running || committing || saving"
-    :items="[{title:'新規作成（既存装備を保護）',value:'new'},{title:'指定司令官を再最適化',value:'selected'},{title:'司令官全体を再最適化（ロック中は除外）',value:'all'}]"
+    :items="[{title:'新規作成（既存装備を保護）',value:'new'},{title:'指定' + roleLabel + 'を再最適化',value:'selected'},{title:roleLabel + '全体を再最適化（ロック中は除外）',value:'all'}]"
     label="最適化モード" class="mb-3" />
   <v-select v-if="allocationMode === 'selected'" v-model="selectedCommanderIds" :disabled="running || committing" :items="commanderChoices"
-    label="再最適化する司令官（複数選択）" multiple chips closable-chips class="mb-3" />
+    :label="'再最適化する' + roleLabel + '（複数選択）'" multiple chips closable-chips class="mb-3" />
   <v-alert v-if="allocationMode !== 'new'" type="warning" variant="tonal" class="mb-3">
-    既存司令官の武具・ジェムを含めて再配分します。ロック中の司令官は変更しません。
+    既存{{ roleLabel }}の武具・ジェムを含めて再配分します。ロック中の{{ roleLabel }}は変更しません。
     全員が目標達成した場合のみ一括保存できます。途中の結果は既存データを変更しません。
   </v-alert>
   <v-select v-model="selected" :disabled="usesCpSat || running || saving" :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
-  <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先にプリセットを登録してください。</v-alert>
+  <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先に<router-link to="/presets">プリセットを登録</router-link>してください。</v-alert>
   <v-alert v-if="usesCpSat && executionMode === 'render' && !cpSatEndpoint" type="warning" variant="tonal" class="mb-3">CP-SATサーバーが未設定です。VITE_OPTIMIZER_API_URLをCloudflareのビルド環境に設定してください。</v-alert>
   <v-select v-if="!usesCpSat" v-model="mode" :disabled="running || saving" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
   <v-select v-if="usesCpSat" v-model="executionMode" :disabled="running || committing" :items="[{ title: 'Render（クラウド）', value: 'render' }, { title: 'このPC（ローカルCP-SAT）', value: 'local' }]" label="最適化の実行先" class="mb-3" />
@@ -289,7 +289,7 @@ async function saveCpSat() {
       {{ allocationMode === 'new' ? 'この' + cpSatPreview.length + '体を保存' : '全' + cpSatPreview.length + '体を安全に一括更新' }}
     </v-btn></div>
     <v-expansion-panels variant="accordion" class="mt-3">
-      <v-expansion-panel v-for="(entry, index) in cpSatPreview" :key="index" :title="entry.job.commanderId ? '司令官 ' + (commanderNumber(existingCommanders.find(c=>c.id===entry.job.commanderId)!, existingCommanders) ?? '未設定') + '：' + entry.job.preset.name : entry.job.preset.name + ' ' + entry.job.ordinal">
+      <v-expansion-panel v-for="(entry, index) in cpSatPreview" :key="index" :title="entry.job.commanderId ? roleLabel + ' ' + (commanderNumber(existingCommanders.find(c=>c.id===entry.job.commanderId)!, existingCommanders) ?? '未設定') + '：' + entry.job.preset.name : entry.job.preset.name + ' ' + entry.job.ordinal">
         <v-expansion-panel-text>
           <div v-if="entry.job.commanderId" class="mb-2 text-caption">現在の構成 → 新しい構成</div>
           <div v-for="slot in SLOT_TYPES" :key="slot" class="mb-2">
@@ -314,9 +314,9 @@ async function saveCpSat() {
     <div class="text-caption mt-2">全項目が「可能性あり」でも、5条件の同時達成や装備・ジェムの重複禁止によって0体になる場合があります。設定値を自動変更することはありません。</div>
   </v-card>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
-  <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み司令官を確認</router-link></v-alert>
+  <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み{{ roleLabel }}を確認</router-link></v-alert>
   <v-card v-if="batchResults.length" class="pa-3 mt-4">
-    <h3 class="text-subtitle-1 mb-2">今回作成した司令官（{{ batchResults.length }}体）</h3>
+    <h3 class="text-subtitle-1 mb-2">今回作成した{{ roleLabel }}（{{ batchResults.length }}体）</h3>
     <v-expansion-panels variant="accordion">
       <v-expansion-panel v-for="(entry, index) in batchResults" :key="index" :title="entry.name">
         <v-expansion-panel-text>
@@ -334,7 +334,7 @@ async function saveCpSat() {
   <template v-if="result">
     <v-card class="pa-3 mt-4">
       <h3 class="text-subtitle-1 mb-2">結果を保存</h3>
-      <v-text-field v-model="commanderName" label="司令官名" />
+      <v-text-field v-model="commanderName" :label="roleLabel + '名'" />
       <v-btn color="primary" :loading="saving" @click="saveResult">この構成を保存して装備を確保</v-btn>
     </v-card>
     <v-alert :type="result.approximate ? 'warning' : 'success'" class="mt-4">

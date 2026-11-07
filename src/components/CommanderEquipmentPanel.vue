@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { SLOT_LABELS, type SlotType, type CommanderBuild, type Equipment, type Gem, type StatDefinition } from '@/domain'
+import { useAppStore } from '@/stores/app'
 import { canonicalStatId } from '@/domain/statAliases'
 
+const { workspace, roleLabel } = useAppStore()
 const props = defineProps<{ build: CommanderBuild; equipment: Equipment[]; gems: Gem[]; stats: StatDefinition[] }>()
 const slots: { key: SlotType; icon: string }[] = [
   { key: 'armor', icon: 'mdi-shield' }, { key: 'weapon', icon: 'mdi-sword' },
@@ -51,7 +53,7 @@ const statRows = computed(() => {
 const categories = [
   { title: '部隊の効果', ids: ['S001','S002','G005'] },
   { title: '防御の構成の効果', ids: ['S004','S005','S006'] },
-  { title: '攻撃の効果', ids: ['S003','S009','S010'] },
+  { title: workspace === 'castellan' ? '防御の効果' : '攻撃の効果', ids: ['S003','S009','S010'] },
   { title: '戦闘前の効果', ids: ['S007'] },
   { title: '戦闘後の効果', ids: ['S008'] }
 ]
@@ -61,7 +63,7 @@ function groupFor(id: string, name: string) {
   if (/城壁|城門|堀の防御/.test(name)) return '防御の構成の効果'
   if (/移動スピード|移動速度/.test(name)) return '戦闘前の効果'
   if (/略奪|資源/.test(name)) return '戦闘後の効果'
-  return '攻撃の効果'
+  return workspace === 'castellan' ? '防御の効果' : '攻撃の効果'
 }
 const grouped = computed(() => categories.map(c => ({
   title: c.title, rows: statRows.value.filter(row => groupFor(row.id, row.name) === c.title)
@@ -72,8 +74,8 @@ const fmt = (n: number) => Number(n.toFixed(3)).toLocaleString('ja-JP')
 </script>
 
 <template>
-  <section class="commander-panel" aria-label="司令官の装備とステータス">
-    <header class="panel-header"><strong>司令官の武具</strong><span>部位をタップして詳細を確認</span></header>
+  <section class="commander-panel" :aria-label="roleLabel + 'の装備とステータス'">
+    <header class="panel-header"><strong>{{ roleLabel }}の武具</strong><span>部位をタップして詳細を確認</span></header>
     <div class="slot-grid" role="group" aria-label="装備スロット">
       <button v-for="slot in slots" :key="slot.key" type="button" class="slot" :class="{ active: selectedSlot === slot.key }"
         :aria-pressed="selectedSlot === slot.key" @click="selectedSlot = slot.key">
@@ -91,11 +93,11 @@ const fmt = (n: number) => Number(n.toFixed(3)).toLocaleString('ja-JP')
       <div v-for="(e,i) in gem?.effects ?? []" :key="'g'+i" class="effect-row"><span>{{ statName(e.statId) }}</span><b>+{{ fmt(e.value) }}{{ statUnit(e.statId) }}</b></div>
     </div>
     <div class="status-header">
-      <strong>司令官のステータス</strong>
+      <strong>{{ roleLabel }}のステータス</strong>
       <button type="button" @click="showStats = !showStats">{{ showStats ? '閉じる ▲' : '表示する ▼' }}</button>
     </div>
     <div v-if="showStats" class="stats">
-      <div v-if="statRows.some(r => r.id === 'G005')" class="npc-summary">
+      <div v-if="workspace === 'commander' && statRows.some(r => r.id === 'G005')" class="npc-summary">
         NPC相手の遠隔兵戦闘力 <strong>+{{ fmt(npcRangedTotal) }}%</strong>
         <small>通常遠隔 {{ fmt(npcRanged) }}% ＋ NPC専用 {{ fmt(statRows.find(r => r.id === 'G005')?.effective ?? 0) }}%</small>
       </div>

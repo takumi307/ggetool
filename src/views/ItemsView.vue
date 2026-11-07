@@ -4,8 +4,11 @@ import { useRouter } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import { commanderNumber } from '@/domain/commanderService'
 import { SLOT_LABELS, SLOT_TYPES, type Equipment, type Gem, type StatDefinition, type CommanderBuild } from '@/domain'
+
+const db = useDb()
 const props = defineProps<{ kind: 'equipment' | 'gems' }>()
 const router = useRouter(), app = useAppStore()
+const { roleLabel } = app
 const items = ref<(Equipment | Gem)[]>([]), stats = ref<StatDefinition[]>([]), assigned = ref<string[]>([]), error = ref('')
 const owners = ref<Record<string,string>>({})
 const orderedItems = computed(() => [...items.value].sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)))
@@ -23,9 +26,8 @@ const slotOptions = [{ title: '全部位', value: 'all' }, ...SLOT_TYPES.map(s =
 const assignedOptions = [{ title: 'すべて', value: 'all' }, { title: '未使用', value: 'unused' }, { title: '使用中', value: 'assigned' }]
 const unit = (id: string) => stats.value.find(s => s.id === id)?.unit ?? '%'
 async function reload() {
-  items.value = await useDb().repo(props.kind).getAll()
-  stats.value = await useDb().repo('stats').getAll()
-  const db = useDb()
+  items.value = await db.repo(props.kind).getAll()
+  stats.value = await db.repo('stats').getAll()
   const commanders: CommanderBuild[] = await db.repo('commanders').getAll()
   const allocations = props.kind === 'equipment'
     ? (await db.repo('equipmentAllocations').getAll()).map(a => ({ id:a.equipmentId, commanderId:a.commanderBuildId }))
@@ -33,7 +35,7 @@ async function reload() {
   assigned.value = allocations.map(a => a.id)
   owners.value = Object.fromEntries(allocations.map(a => {
     const c = commanders.find(c => c.id === a.commanderId)
-    return [a.id, c ? '司令官 ' + (commanderNumber(c, commanders) ?? '未設定') + '：' + c.name : '不明な司令官']
+    return [a.id, c ? roleLabel + ' ' + (commanderNumber(c, commanders) ?? '未設定') + '：' + c.name : '不明な' + roleLabel]
   }))
 }
 onMounted(reload)
@@ -45,7 +47,7 @@ async function remove(item: Equipment | Gem) {
   error.value = ''
   if (assigned.value.includes(item.id)) { error.value = '使用中の装備・ジェムは削除できません'; return }
   if (!confirm('「' + item.name + '」を削除しますか？')) return
-  try { await useDb().repo(props.kind).delete(item.id); await app.refreshCounts(); await reload() }
+  try { await db.repo(props.kind).delete(item.id); await app.refreshCounts(db); await reload() }
   catch (e) { error.value = String(e) }
 }
 </script>

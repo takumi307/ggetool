@@ -3,7 +3,10 @@ import { onMounted, ref } from 'vue'
 import { useAppStore, useDb } from '@/stores/app'
 import { SCHEMA_VERSION, type AppSettings } from '@/domain'
 
+const db = useDb()
+
 const app = useAppStore()
+const { roleLabel } = app
 const settings = ref<AppSettings | null>(null)
 const error = ref('')
 const notice = ref('')
@@ -15,7 +18,7 @@ const algorithms = [
 ]
 onMounted(async () => {
   try {
-    settings.value = await useDb().repo('settings').get('app') ?? { id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'auto' }
+    settings.value = await db.repo('settings').get('app') ?? { id: 'app', schemaVersion: SCHEMA_VERSION, optimizerId: 'auto' }
     if (settings.value.optimizerId === 'default') settings.value.optimizerId = 'auto'
   }
   catch (e) { error.value = String(e) }
@@ -26,7 +29,7 @@ async function save() {
   try {
     if (settings.value.optimizerId === 'default') settings.value.optimizerId = 'auto'
     if (!algorithms.some(a => a.value === settings.value?.optimizerId)) throw Error('未対応の探索方式です')
-    await useDb().repo('settings').put({ ...settings.value, schemaVersion: SCHEMA_VERSION })
+    await db.repo('settings').put({ ...settings.value, schemaVersion: SCHEMA_VERSION })
     notice.value = '設定を保存しました'
   } catch (e) { error.value = String(e) } finally { busy.value = false }
 }
@@ -46,7 +49,7 @@ async function save() {
       <v-col cols="6" sm="4">ジェム：{{ app.counts.gems }}件</v-col>
       <v-col cols="6" sm="4">効果定義：{{ app.counts.stats }}件</v-col>
       <v-col cols="6" sm="4">プリセット：{{ app.counts.presets }}件</v-col>
-      <v-col cols="6" sm="4">司令官：{{ app.counts.commanders }}体</v-col>
+      <v-col cols="6" sm="4">{{ roleLabel }}：{{ app.counts.commanders }}体</v-col>
     </v-row>
     <v-btn class="mt-3" variant="outlined" color="primary" to="/backup">JSONバックアップ・復元へ</v-btn>
   </v-card>

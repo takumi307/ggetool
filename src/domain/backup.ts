@@ -1,21 +1,26 @@
 import { SCHEMA_VERSION, SLOT_TYPES, type Equipment, type Gem, type StatDefinition } from './types'
 import { STORE_NAMES, STORE_KEYS, type Database, type StoreName, type StoreSchemas } from '@/repositories/types'
+import { WORKSPACE_LABELS, type BuildWorkspace } from './workspace'
 import { validateEquipment, validateGem, validateStat } from './validation'
 
 export type BackupData = {
   schemaVersion: number
+  workspace?: BuildWorkspace
   exportedAt: string
   stores: { [K in StoreName]: StoreSchemas[K][] }
 }
 const record = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
-export async function exportBackup(db: Database): Promise<BackupData> {
+export async function exportBackup(db: Database, workspace: BuildWorkspace = 'commander'): Promise<BackupData> {
   const stores = {} as BackupData['stores']
   for (const name of STORE_NAMES) (stores as unknown as Record<string, unknown>)[name] = await db.repo(name).getAll()
-  return { schemaVersion: SCHEMA_VERSION, exportedAt: new Date().toISOString(), stores }
+  return { schemaVersion: SCHEMA_VERSION, ...(workspace === 'castellan' ? { workspace } : {}), exportedAt: new Date().toISOString(), stores }
 }
-export function parseBackup(text: string): BackupData {
+export function parseBackup(text: string, workspace: BuildWorkspace = 'commander'): BackupData {
   const raw: unknown = JSON.parse(text)
   if (!record(raw) || raw.schemaVersion !== SCHEMA_VERSION || !record(raw.stores)) throw Error('非対応のバックアップ形式・バージョンです')
+  if (raw.workspace !== undefined && raw.workspace !== 'commander' && raw.workspace !== 'castellan') throw Error('バックアップの種類が不正です')
+  const sourceWorkspace = raw.workspace ?? 'commander'
+  if (sourceWorkspace !== workspace) throw Error(WORKSPACE_LABELS[sourceWorkspace] + 'タブでこのバックアップを復元してください')
   const stores = raw.stores
   for (const name of STORE_NAMES) {
     const rows = stores[name]

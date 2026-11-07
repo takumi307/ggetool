@@ -1,22 +1,28 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useDb, useAppStore } from '@/stores/app'
+import { canonicalStatId } from '@/domain/statAliases'
 import type { BuildPreset, StatDefinition, Equipment } from '@/domain'
+
+const db = useDb()
 const app = useAppStore()
+const { workspace, roleLabel } = app
 const presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([]), equipment = ref<Equipment[]>([]), editing = ref<BuildPreset | null>(null), error = ref('')
-const defaults = [
+const defaults = workspace === 'castellan' ? [
+  { name: '防御バランス（例）', targets: [['C001', 100], ['C002', 100], ['C003', 50]], defaultCount: 1, description: '編集できる目標の例です。ゲームの上限値ではありません。' }
+] as const : [
   { name: 'バランス型', targets: [['S002', 120], ['S001', 120], ['S003', 50]], defaultCount: 30, description: '暫定の最低条件。合計150%への接近とNPC補正を含む80%の最適化は未対応。' },
   { name: '略奪特化型', targets: [['S008', 50]], defaultCount: 3, description: '略奪量50%のみを最低条件とする' },
   { name: '援軍特化型', targets: [['S002', 120], ['S003', 50], ['S007', 90]], defaultCount: 1, description: '遠隔兵120%、中庭50%、移動速度90%' }
 ] as const
-async function reload() { presets.value = await useDb().repo('presets').getAll(); stats.value = await useDb().repo('stats').getAll(); equipment.value = await useDb().repo('equipment').getAll() }
+async function reload() { presets.value = await db.repo('presets').getAll(); stats.value = await db.repo('stats').getAll(); equipment.value = await db.repo('equipment').getAll() }
 onMounted(reload)
 function fresh(): BuildPreset {
   return { id: crypto.randomUUID(), name: '', targets: [], priorityStats: [], maximizeStats: [], defaultCount: 1, priority: 1, description: '' }
 }
 function start(p?: BuildPreset) {
   editing.value = p ? JSON.parse(JSON.stringify(p)) as BuildPreset : fresh()
-  if (editing.value.name.includes('援軍特化')) {
+  if (workspace === 'commander' && editing.value.name.includes('援軍特化')) {
     const supportStat = stats.value.find(s => s.name.includes('中庭攻撃時に受ける') && s.name.includes('乙女の援軍'))
     if (supportStat && !editing.value.requiredEquipmentStatId) {
       editing.value.requiredEquipmentStatId = supportStat.id
@@ -28,13 +34,13 @@ function start(p?: BuildPreset) {
 async function seed() {
   if (presets.value.length && !confirm('既存プリセットを残して、未登録の標準プリセットを追加しますか？')) return
   for (const d of defaults) {
-    if (presets.value.some(p => p.name === d.name)) continue
-    await useDb().repo('presets').put({
+    if (presets.value.some(p => p.name === d.name) || d.targets.some(([id]) => !stats.value.some(s => s.id === id))) continue
+    await db.repo('presets').put({
       ...fresh(), name: d.name, targets: d.targets.map(([statId, minValue]) => ({ statId, minValue })),
       defaultCount: d.defaultCount, description: d.description
     })
   }
-  await reload(); await app.refreshCounts()
+  await reload(); await app.refreshCounts(db)
 }
 async function save() {
   if (!editing.value) return
@@ -49,14 +55,14 @@ async function save() {
   // Keep the legacy field for backup compatibility, but disable its behavior.
   p.maximizeStats = []
   p.priorityStats = []
-  try { await useDb().repo('presets').put(JSON.parse(JSON.stringify(p)) as BuildPreset); editing.value = null; await reload(); await app.refreshCounts() }
+  try { await db.repo('presets').put(JSON.parse(JSON.stringify(p)) as BuildPreset); editing.value = null; await reload(); await app.refreshCounts(db) }
   catch (e) { error.value = String(e) }
 }
 async function remove(p: BuildPreset) {
-  const [plans, commanders] = await Promise.all([useDb().repo('plans').getAll(), useDb().repo('commanders').getAll()])
+  const [plans, commanders] = await Promise.all([db.repo('plans').getAll(), db.repo('commanders').getAll()])
   if (plans.some(x => x.presetId === p.id) || commanders.some(x => x.presetId === p.id)) { error.value = '使用中のプリセットは削除できません'; return }
   if (!confirm(p.name + 'を削除しますか？')) return
-  await useDb().repo('presets').delete(p.id); await reload(); await app.refreshCounts()
+  await db.repo('presets').delete(p.id); await reload(); await app.refreshCounts(db)
 }
 </script>
 <template>
@@ -79,13 +85,13 @@ async function remove(p: BuildPreset) {
       <v-text-field v-model="editing.name" label="名前" />
       <v-text-field v-model.number="editing.defaultCount" type="number" min="1" label="標準作成数" />
       <v-textarea v-model="editing.description" rows="2" label="説明" />
-      <v-select v-model="editing.requiredEquipmentStatId" :items="stats.filter(s => s.category === 'equipment').map(s => ({ title: s.name, value: s.id }))" label="必須装備効果（効果を持つ武具を最低1つ使用）" clearable hint="援軍特化型は「中庭攻撃時に受けるレベル10乙女の援軍」を選択。装備名ではなく効果で判定します。" persistent-hint class="mb-3" />
+      <v-select v-model="editing.requiredEquipmentStatId" :items="stats.filter(s => s.category === 'equipment').map(s => ({ title: s.name, value: s.id }))" label="必須装備効果（効果を持つ武具を最低1つ使用）" clearable :hint="workspace === 'commander' ? '援軍特化型は「中庭攻撃時に受けるレベル10乙女の援軍」を選択。装備名ではなく効果で判定します。' : '選択した効果が付く武具を各城代に最低1個使います。'" persistent-hint class="mb-3" />
       <v-alert v-if="editing.requiredEquipmentStatId" type="info" variant="tonal" class="mb-3">該当効果を持つ登録装備：{{ equipment.filter(e => e.effects.some(x => x.statId === editing!.requiredEquipmentStatId && x.value > 0)).length }}件</v-alert>
-      <v-text-field v-if="!editing.requiredEquipmentStatId" v-model="editing.requiredEquipmentKeyword" label="必須装備名（部分一致・空欄なら指定なし）" hint="例：援軍。各司令官に、この文字を名前に含む装備を最低1個必須にします。装備は司令官間で重複使用しません。" persistent-hint class="mb-3" />
+      <v-text-field v-if="!editing.requiredEquipmentStatId" v-model="editing.requiredEquipmentKeyword" label="必須装備名（部分一致・空欄なら指定なし）" :hint="'各' + roleLabel + 'に、この文字を名前に含む装備を最低1個必須にします。装備の重複使用はできません。'" persistent-hint class="mb-3" />
       <v-alert v-if="editing.requiredEquipmentKeyword" type="info" variant="tonal" class="mb-3">一致する登録装備：{{ equipment.filter(e => e.name.includes(editing!.requiredEquipmentKeyword!.trim())).length }}件。6体作る場合は最低6個の未使用装備が必要です。</v-alert>
       <h4 class="mb-2">最低目標</h4>
       <v-row v-for="(t, i) in editing.targets" :key="i" dense>
-        <v-col cols="7"><v-select v-model="t.statId" :items="stats.map(s => ({ title: s.name, value: s.id }))" label="効果" /></v-col>
+        <v-col cols="7"><v-select v-model="t.statId" :items="stats.filter(s => workspace === 'commander' || canonicalStatId(s.id) === s.id).map(s => ({ title: s.name, value: s.id }))" label="効果" /></v-col>
         <v-col cols="4"><v-text-field v-model.number="t.minValue" type="number" label="目標値" /></v-col>
         <v-col cols="1"><v-btn icon="mdi-close" size="small" variant="text" @click="editing.targets.splice(i, 1)" /></v-col>
       </v-row>

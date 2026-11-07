@@ -4,14 +4,22 @@ import { useRoute, useRouter } from 'vue-router'
 import { useDb, useAppStore } from '@/stores/app'
 import { SLOT_TYPES, SLOT_LABELS, type SlotType, type StatDefinition, type EffectEntry, type Equipment, type Gem } from '@/domain'
 import { validateEquipment, validateGem } from '@/domain/validation'
+
+const db = useDb()
 const props = defineProps<{ kind: 'equipment' | 'gems' }>()
 const route = useRoute(), router = useRouter(), app = useAppStore()
+const workspace = app.workspace
 const name = ref(''), slotType = ref<SlotType>('helmet'), memo = ref('')
 const allowedSlots = ref<SlotType[]>([...SLOT_TYPES])
 const emptyEffect = (): EffectEntry => ({ statId: '', value: 0 })
 const effects = ref<EffectEntry[]>(Array.from({ length: 3 }, emptyEffect)), stats = ref<StatDefinition[]>([])
 // Common leading effects observed in the 140-item equipment backup.
-const commonEffects: Record<SlotType, string[]> = {
+const commonEffects: Record<SlotType, string[]> = workspace === 'castellan' ? {
+  weapon: ['C008', 'C009', 'C007'],
+  armor: ['C004', 'C005', 'C006'],
+  helmet: ['C004', 'C005', 'C006'],
+  artifact: ['C008', 'C009', 'C007'],
+} : {
   weapon: ['S001', 'S002'],
   armor: ['S004', 'S006'],
   helmet: ['S005', 'S007'],
@@ -36,10 +44,10 @@ const choices = computed(() => stats.value.filter(s => s.category === (props.kin
 const slots = SLOT_TYPES.map(s => ({ title: SLOT_LABELS[s], value: s }))
 const effectUnit = (id: string) => stats.value.find(s => s.id === id)?.unit || '%'
 onMounted(async () => {
-  stats.value = await useDb().repo('stats').getAll()
+  stats.value = await db.repo('stats').getAll()
   if (!editId.value) prefillEffects(slotType.value)
   if (!editId.value) return
-  const item = await useDb().repo(props.kind).get(editId.value)
+  const item = await db.repo(props.kind).get(editId.value)
   if (!item) { error.value = '対象が見つかりません'; return }
   name.value = item.name; memo.value = item.memo; createdAt.value = item.createdAt
   effects.value = item.effects.map(e => ({ ...e }))
@@ -63,7 +71,7 @@ async function save() {
     : { ...base, allowedSlots: [...allowedSlots.value] }
   const issue = 'slotType' in item ? validateEquipment(item, stats.value) : validateGem(item, stats.value)
   if (issue) { error.value = issue; return }
-  const existing = await useDb().repo(props.kind).getAll()
+  const existing = await db.repo(props.kind).getAll()
   duplicates.value = existing.filter(other => other.id !== item.id && normalize(other) === normalize(item))
   if (duplicates.value.length && !duplicateConfirmed.value) {
     error.value = '同じ部位・効果・数値の登録が見つかりました。重複の可能性を確認してください。'
@@ -71,10 +79,10 @@ async function save() {
   }
   saving.value = true
   try {
-    if ('slotType' in item) await useDb().repo('equipment').put(item)
-    else await useDb().repo('gems').put(item)
-    await app.refreshCounts()
-    await router.push(props.kind === 'equipment' ? '/equipment' : '/gems')
+    if ('slotType' in item) await db.repo('equipment').put(item)
+    else await db.repo('gems').put(item)
+    await app.refreshCounts(db)
+    if (app.workspace === workspace) await router.push(props.kind === 'equipment' ? '/equipment' : '/gems')
   } catch (e) { error.value = String(e) } finally { saving.value = false }
 }
 </script>

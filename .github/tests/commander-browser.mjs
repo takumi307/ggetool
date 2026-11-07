@@ -107,6 +107,68 @@ try {
   }
   assert.deepEqual(helmets.sort(), ['upgrade-a-helmet', 'upgrade-b-helmet'])
   console.log('Browser reoptimization, atomic save, and persistence verified')
+
+  const tab = name => page.getByRole('tab', { name, exact: true })
+  const heading = name => page.getByRole('heading', { name, exact: true })
+  const selectBackup = data => page.locator('input[type=file]').setInputFiles({
+    name: 'workspace-fixture.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(data)),
+  })
+
+  await tab('城代').click()
+  await visible(heading('保存済み城代'))
+  assert.equal(await card('検証-locked').count(), 0)
+  await link('ビルドプリセット').click()
+  await button('標準プリセットを追加').click()
+  await visible(link('防御バランス（例）'))
+
+  await link('バックアップ・復元').click()
+  await selectBackup(fixture)
+  await visible(link('Error: 司令官タブでこのバックアップを復元してください'))
+  assert.equal(await button('確認して全件置換').count(), 0)
+
+  const defenseStat = { ...makeStat('C001', 'equipment'), name: '防御時の乱闘兵の戦闘力' }
+  const defenseGemStat = { ...makeStat('CG001', 'gem'), name: '防御時の乱闘兵の戦闘力（ジェム）' }
+  const castellanFixture = {
+    ...fixture, workspace: 'castellan',
+    stores: {
+      ...fixture.stores,
+      equipment: slots.map(slot => ({
+        ...makeGear('defense', slot, 10),
+        effects: ['C001', 'test-other-a', 'test-other-b'].map((statId, i) => ({ statId, value: i ? 0 : 10 })),
+      })),
+      gems: [{
+        ...fixture.stores.gems[0], id: 'defense-gem', name: 'defense-gem',
+        effects: [{ statId: 'CG001', value: 15 }],
+      }],
+      stats: [...fixture.stores.stats, defenseStat, defenseGemStat],
+      presets: [{
+        ...fixture.stores.presets[0], name: '城代検証', targets: [{ statId: 'C001', minValue: 50 }],
+      }],
+      commanders: [], equipmentAllocations: [], gemAllocations: [],
+    },
+  }
+  await selectBackup(castellanFixture)
+  page.once('dialog', dialog => dialog.accept())
+  await button('確認して全件置換').click()
+  await visible(link('復元しました'))
+  await link('最適化実行').click()
+  await visible(heading('城代の最適化'))
+  await button('最適化を実行').click()
+  await visible(page.getByText('防御時の乱闘兵の戦闘力：55 / 50', { exact: false }))
+  await page.getByRole('textbox', { name: '城代名', exact: true }).fill('検証城代')
+  await button('この構成を保存して装備を確保').click()
+  await visible(page.getByText('「検証城代」を保存しました', { exact: false }))
+  await link('保存済み城代を確認').click()
+  await visible(heading('保存済み城代'))
+  await page.reload()
+  await visible(card('検証城代').getByText(/兜：defense-helmet/))
+  await tab('司令官').click()
+  await visible(heading('保存済み司令官'))
+  await visible(card('検証-locked').getByText(/兜：locked-helmet/))
+  assert.equal(await card('検証城代').count(), 0)
+  console.log('Castellan optimization and independent saves verified')
 } catch (error) {
   console.error(await page.locator('body').innerText())
   throw error

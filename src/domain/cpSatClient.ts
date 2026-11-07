@@ -48,8 +48,28 @@ export async function optimizeCpSat(input: {
 }): Promise<CpSatOutcome> {
   const endpoint = input.endpoint ?? cpSatEndpoint
   if (!endpoint) throw new Error('CP-SAT APIが未設定です。VITE_OPTIMIZER_API_URLを設定してください。')
+  const wait = (ms: number) => new Promise<void>((resolve, reject) => {
+    if (input.signal?.aborted) { reject(new DOMException('中断しました', 'AbortError')); return }
+    const timer = setTimeout(() => { input.signal?.removeEventListener('abort', abort); resolve() }, ms)
+    const abort = () => { clearTimeout(timer); reject(new DOMException('中断しました', 'AbortError')) }
+    input.signal?.addEventListener('abort', abort, { once: true })
+  })
   if (input.castellan) {
-    const health = await fetch(endpoint + '/health', { signal: input.signal })
+    let health: Response | undefined
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      input.onProgress?.(`計算サーバーの応答を確認中（${attempt}/3）…`)
+      const timeout = AbortSignal.timeout(20000)
+      const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout
+      health = await fetch(endpoint + '/health', { signal, cache: 'no-store' }).catch(error => {
+        if (input.signal?.aborted) throw error
+        return undefined
+      })
+      if (health && ![502, 503, 504].includes(health.status)) break
+      if (attempt < 3) await wait(1500 * attempt)
+    }
+    if (!health || [502, 503, 504].includes(health.status)) {
+      throw new Error('計算サーバーの応答確認に失敗しました。少し待って再実行してください。')
+    }
     if (!health.ok || (await health.json()).castellan !== true) {
       throw new Error('この計算サーバーは城代に未対応です。最新版に更新するか、実行先にブラウザを選択してください。')
     }
@@ -57,15 +77,18 @@ export async function optimizeCpSat(input: {
   const scales = input.castellan ? castellanScoringScales(input.stats, [...input.equipment, ...input.gems]) : new Map<string, number>()
   // Submit once, then poll short requests; a 5-minute solve must not depend
   // on keeping a single browser/Cloudflare/Render connection open.
+  input.onProgress?.('計算データをサーバーへ送信中…')
   const response = await fetch(endpoint + '/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal: input.signal,
     body: JSON.stringify({
       castellan: input.castellan,
-      equipment: input.equipment,
-      gems: input.gems.map(g => ({ ...g, effects: g.effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })) })),
-      stats: input.stats,
+      equipment: input.equipment.map(({ id, slotType, effects }) => ({ id, slotType, effects })),
+      gems: input.gems.map(({ id, allowedSlots, effects }) => ({
+        id, allowedSlots, effects: effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })),
+      })),
+      stats: input.stats.map(({ id, cap, capStatus }) => ({ id, cap, capStatus })),
       jobs: input.jobs.map(j => ({
         presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
         scoring: input.castellan ? castellanScoringStats({ ...j.preset, castellanObjective: j.preset.castellanObjective ?? 'general' }, scales) : undefined,
@@ -79,7 +102,11 @@ export async function optimizeCpSat(input: {
       maxAchieved: input.maxAchieved,
       timeLimitSeconds: input.timeLimitSeconds
     })
+  }).catch(error => {
+    if (input.signal?.aborted) throw error
+    throw new Error('計算データの送信で接続が途切れました。計算が開始済みの可能性があるため、少し待って再実行してください。', { cause: error })
   })
+  if (response.status === 429) throw new Error('計算サーバーが別の計算を実行中です。完了後に再実行してください。')
   if (!response.ok) throw new Error('CP-SATジョブ開始エラー: HTTP ' + response.status)
   const started = await response.json() as { jobId: string }
   if (!/^[a-f0-9]{32}$/.test(started.jobId)) throw new Error('不正なジョブIDです')
@@ -87,12 +114,7 @@ export async function optimizeCpSat(input: {
   const deadline = Date.now() + waitMs
   let data: ServerResponse | undefined
   while (Date.now() < deadline) {
-    await new Promise<void>((resolve, reject) => {
-      if (input.signal?.aborted) { reject(new DOMException('中断しました', 'AbortError')); return }
-      const timer = setTimeout(() => { input.signal?.removeEventListener('abort', abort); resolve() }, 3000)
-      const abort = () => { clearTimeout(timer); reject(new DOMException('中断しました', 'AbortError')) }
-      input.signal?.addEventListener('abort', abort, { once: true })
-    })
+    await wait(3000)
     const poll = await fetch(endpoint + '/jobs/' + started.jobId, { signal: input.signal })
     if (poll.status === 404) throw new Error('Renderが再起動し、計算ジョブが失われました。再実行してください。')
     if (!poll.ok) throw new Error('計算状況の取得に失敗: HTTP ' + poll.status)

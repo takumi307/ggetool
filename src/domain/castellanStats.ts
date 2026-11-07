@@ -8,7 +8,7 @@ const weapons = [
   ['C005', '城門の防御力', 160],
   ['C006', '堀の防御力', 120],
   ['C007', '防衛中の城壁の最大部隊数', 50],
-  ['C008', '正面部隊の戦闘力', 20],
+  ['C008', '正面防御部隊の戦闘力', 20],
   ['C009', '側面の防御部隊の戦闘力', 20],
   ['C010', '防衛部隊の戦闘力', 20],
   ['C011', '略奪で失われる資源', 50],
@@ -34,6 +34,7 @@ const stat = (id: string, name: string, category: StatDefinition['category'], ca
 
 export const CASTELLAN_STAT_SEEDS: StatDefinition[] = [
   ...weapons.map(([id, name, cap]) => stat(id, name, 'equipment', cap)),
+  { ...stat('C012', '中庭防御時に受けるレベル10北の守護者の援軍', 'equipment', null), unit: '人' },
   stat('CG003', '中庭で防御する際の戦闘力', 'gem', null),
   ...opponentEffects.map(([id, name, cap]) => stat('CNG' + id, 'NPC' + name, 'gem', cap)),
   ...opponentEffects.map(([id, name, cap]) => stat('CPG' + id, '城主' + name, 'gem', cap)),
@@ -64,6 +65,8 @@ export function mergeCastellanStats(existing: StatDefinition[]): StatDefinition[
              current.capStatus === 'unknown' && current.cap === null &&
              current.category === seed.category && current.unit === '%' && current.description === '') {
       byId.set(seed.id, seed)
+    } else if (seed.id === 'C008' && (current.name === '正面部隊の戦闘力' || current.name === oldNames.get(seed.id))) {
+      byId.set(seed.id, { ...current, name: seed.name })
     }
   }
   return [...byId.values()]
@@ -71,5 +74,5 @@ export function mergeCastellanStats(existing: StatDefinition[]): StatDefinition[
 
 export function castellanScoringStats(objective: 'npc' | 'lord') {
   return CASTELLAN_STAT_SEEDS.filter(s =>
-    s.category === 'equipment' || s.id.startsWith(objective === 'npc' ? 'CNG' : 'CPG'))
+    s.cap !== null && (s.category === 'equipment' || s.id.startsWith(objective === 'npc' ? 'CNG' : 'CPG')))
 }

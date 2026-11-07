@@ -30,7 +30,9 @@ interface ServerResponse {
   requested: number
   builds: ServerBuild[]
 }
-export const cpSatEndpoint = (import.meta.env.VITE_OPTIMIZER_API_URL as string | undefined)?.replace(/\/$/, '') ?? ''
+export const cpSatEndpoint = globalThis.location?.hostname === 'ggetool.takutaku307.workers.dev'
+  ? '/api/optimizer'
+  : (import.meta.env.VITE_OPTIMIZER_API_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
 export async function optimizeCpSat(input: {
   jobs: CpSatJob[]
@@ -44,6 +46,7 @@ export async function optimizeCpSat(input: {
   maxAchieved?: number
   signal?: AbortSignal
   endpoint?: string
+  local?: boolean
   onProgress?: (message: string) => void
 }): Promise<CpSatOutcome> {
   const endpoint = input.endpoint ?? cpSatEndpoint
@@ -54,26 +57,6 @@ export async function optimizeCpSat(input: {
     const abort = () => { clearTimeout(timer); reject(new DOMException('中断しました', 'AbortError')) }
     input.signal?.addEventListener('abort', abort, { once: true })
   })
-  if (input.castellan) {
-    let health: Response | undefined
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      input.onProgress?.(`計算サーバーの応答を確認中（${attempt}/3）…`)
-      const timeout = AbortSignal.timeout(20000)
-      const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout
-      health = await fetch(endpoint + '/health', { signal, cache: 'no-store' }).catch(error => {
-        if (input.signal?.aborted) throw error
-        return undefined
-      })
-      if (health && ![502, 503, 504].includes(health.status)) break
-      if (attempt < 3) await wait(1500 * attempt)
-    }
-    if (!health || [502, 503, 504].includes(health.status)) {
-      throw new Error('計算サーバーの応答確認に失敗しました。少し待って再実行してください。')
-    }
-    if (!health.ok || (await health.json()).castellan !== true) {
-      throw new Error('この計算サーバーは城代に未対応です。最新版に更新するか、実行先にブラウザを選択してください。')
-    }
-  }
   const scales = input.castellan ? castellanScoringScales(input.stats, [...input.equipment, ...input.gems]) : new Map<string, number>()
   // Submit once, then poll short requests; a 5-minute solve must not depend
   // on keeping a single browser/Cloudflare/Render connection open.
@@ -104,11 +87,15 @@ export async function optimizeCpSat(input: {
     })
   }).catch(error => {
     if (input.signal?.aborted) throw error
-    throw new Error('計算データの送信で接続が途切れました。計算が開始済みの可能性があるため、少し待って再実行してください。')
+    throw new Error(input.local
+      ? 'このPCの計算サーバーに接続できません。サーバーの起動とブラウザのローカルネットワーク許可を確認してください。'
+      : 'Renderへの送信中に接続が途切れました。少し待ってから再実行してください。')
   })
   if (response.status === 429) throw new Error('計算サーバーが別の計算を実行中です。完了後に再実行してください。')
-  if (!response.ok) throw new Error('CP-SATジョブ開始エラー: HTTP ' + response.status)
-  const started = await response.json() as { jobId: string }
+  if ([502, 503, 504].includes(response.status)) throw new Error('Renderの計算サーバーに接続できません（HTTP ' + response.status + '）。少し待って再実行してください。')
+  if (!response.ok) throw new Error('計算を開始できません（HTTP ' + response.status + '）。')
+  const started = await response.json() as { jobId: string; castellan?: boolean }
+  if (input.castellan && started.castellan !== true) throw new Error('この計算サーバーは城代に未対応です。計算サーバーを最新版に更新してください。')
   if (!/^[a-f0-9]{32}$/.test(started.jobId)) throw new Error('不正なジョブIDです')
   const waitMs = input.timeLimitSeconds * (input.castellan ? 3000 : 2000) + 120000
   const deadline = Date.now() + waitMs

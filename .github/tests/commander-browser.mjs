@@ -145,7 +145,7 @@ try {
       ...fixture.stores,
       equipment: ['defense', 'reserve-a', 'reserve-b', 'reserve-c'].flatMap(prefix => slots.map(slot => ({
         ...makeGear(prefix, slot, 10),
-        effects: ['C001', 'test-other-a', 'test-other-b'].map((statId, i) => ({ statId, value: i ? 0 : 10 })),
+        effects: ['C001', 'test-other-a', 'test-other-b'].map((statId, i) => ({ statId, value: i ? 0 : (slot === 'helmet' && prefix !== 'defense' ? 4 : 10) })),
       }))),
       gems: [{
         ...fixture.stores.gems[0], id: 'defense-gem', name: 'defense-gem',
@@ -170,13 +170,18 @@ try {
   await visible(link('復元しました'))
   await link('最適化実行').click()
   await visible(heading('城代の最適化'))
-  await visible(button('城代をまとめて作成'))
+  await visible(button('CP-SATで新規作成'))
   await select('最適化モード').press('ArrowDown')
   await option('1体だけ作る').click()
   await visible(link('防御時の乱闘兵の戦闘力：50%以上'))
-  const workerStarted = page.waitForEvent('worker')
+  let healthRequests = 0
+  await page.route('**/health', async route => {
+    healthRequests++
+    await route.abort('failed')
+  })
+  const singleSubmitted = page.waitForRequest(req => req.method() === 'POST' && req.url().endsWith('/jobs'))
   await button('最適化を実行').click()
-  await workerStarted
+  assert.equal((await singleSubmitted).postDataJSON().jobs.length, 1)
   await visible(page.getByText('防御時の乱闘兵の戦闘力：50 / 50', { exact: false }))
   await page.getByRole('textbox', { name: '城代名', exact: true }).fill('検証城代')
   await button('この構成を保存して装備を確保').click()
@@ -190,28 +195,21 @@ try {
   await visible(heading('最適化結果'))
   await visible(page.getByText('防御時の乱闘兵の戦闘力：50 / 50', { exact: false }))
   await link('最適化実行').click()
-  await page.locator('summary').filter({ hasText: '計算設定' }).click()
   await select('最適化の実行先').press('ArrowDown')
+  await visible(option('Render（クラウド）'))
+  await visible(option('このPC'))
+  assert.equal(await option('ブラウザ').count(), 0)
   await option('Render（クラウド）').click()
   await select('計算時間（各段階）').press('ArrowDown')
   await option('30秒').click()
-  let interruptedHealthCheck = false
-  await page.route('**/health', async route => {
-    interruptedHealthCheck = true
-    await route.abort('failed')
-  }, { times: 1 })
   const submitted = page.waitForRequest(req => req.method() === 'POST' && req.url().endsWith('/jobs'))
   await button('CP-SATで新規作成').click()
   const castellanRequest = (await submitted).postDataJSON()
-  assert.equal(interruptedHealthCheck, true)
+  assert.equal(healthRequests, 0)
   assert.equal(castellanRequest.castellan, true)
   assert.equal(castellanRequest.timeLimitSeconds, 30)
   assert.ok(castellanRequest.jobs.some(job => job.scoring.some(stat => stat.id === 'C001' && stat.weight === 5)))
   await visible(heading('CP-SAT最適化結果（3体）'))
-  await select('最適化の実行先').press('ArrowDown')
-  await option('ブラウザ').click()
-  await button('城代をまとめて作成').click()
-  await visible(heading('城代の最適化結果（3体）'))
   await button('この3体を保存').click()
   await visible(page.getByText('3体の城代を保存しました', { exact: false }))
   await link('保存済み城代を確認').click()

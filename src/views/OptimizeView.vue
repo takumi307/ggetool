@@ -10,8 +10,7 @@ import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignments } from '@/domain/commanderService'
 import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob } from '@/domain/cpSatClient'
 import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type EquipmentAllocation, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
-import { type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
-import { runCastellanPlan, runOptimizeSingle } from '@/domain/optimizerRunner'
+import type { OptimizationResult } from '@/domain/optimizer'
 
 const db = useDb()
 const app = useAppStore()
@@ -29,9 +28,8 @@ const missingSlots = ref<string[]>([])
 const cpSatOptimal = ref(false)
 const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
-const executionMode = ref<'browser' | 'render' | 'local'>(workspace === 'castellan' ? 'browser' : cpSatEndpoint ? 'render' : 'local')
+const executionMode = ref<'render' | 'local'>(cpSatEndpoint ? 'render' : 'local')
 const executionOptions = [
-  ...(workspace === 'castellan' ? [{ title: 'ブラウザ', value: 'browser' }] : []),
   ...(cpSatEndpoint ? [{ title: 'Render（クラウド）', value: 'render' }] : []),
   { title: 'このPC', value: 'local' },
 ]
@@ -80,8 +78,7 @@ const activePlans = computed(() => {
     presets.value.find(preset => preset.id === plan.presetId)?.castellanObjective === 'npc' ? 0 : 1
   return plans.value.filter(p => p.enabled).sort((a, b) => npcRank(a) - npcRank(b) || a.priority - b.priority)
 })
-const usesCpSat = computed(() => allocationMode.value !== 'single')
-const browserBatch = computed(() => usesCpSat.value && executionMode.value === 'browser')
+const singleBuild = computed(() => allocationMode.value === 'single')
 const reoptimizing = computed(() => allocationMode.value === 'selected' || allocationMode.value === 'all')
 const availableSlots = computed(() => {
   const released = new Set(targetCommanders.value.map(commander => commander.id))
@@ -96,13 +93,10 @@ const freePositions = computed(() => Math.max(0, MAX_COMMANDERS - existingComman
 const canRun = computed(() => ready.value && !running.value && !committing.value && !saving.value &&
   availableSlots.value.every(slot => slot.available > 0) &&
   (reoptimizing.value ? targetCommanders.value.length > 0 : freePositions.value > 0) &&
-  (allocationMode.value === 'new' ? pendingPlanCount.value > 0 : usesCpSat.value || Boolean(preset.value)) &&
-  (!usesCpSat.value || browserBatch.value || executionMode.value === 'local' || Boolean(cpSatEndpoint)))
-const mode = ref<OptimizerMode>('auto')
-const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
+  (allocationMode.value === 'new' ? pendingPlanCount.value > 0 : !singleBuild.value || Boolean(preset.value)))
 const presets = ref<BuildPreset[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), stats = ref<StatDefinition[]>([])
 const selected = ref(''), result = ref<OptimizationResult | null>(null), message = ref(''), running = ref(false)
-watch([allocationMode, selectedCommanderIds, executionMode, timeLimitSeconds, selected, mode], () => {
+watch([allocationMode, selectedCommanderIds, executionMode, timeLimitSeconds, selected], () => {
   cpSatPreview.value = []
   zeroDiagnostics.value = []
   missingSlots.value = []
@@ -145,8 +139,6 @@ onMounted(async () => {
     allocationMode.value = activePlans.value.length ? 'new' : 'single'
     applyRequestedMode()
     await refreshAvailability()
-    const settings = await db.repo('settings').get('app')
-    if (settings?.optimizerId === 'precise' || settings?.optimizerId === 'fast') mode.value = settings.optimizerId
     ready.value = true
   } catch (error) { message.value = String(error) }
 })
@@ -163,32 +155,6 @@ async function saveResult() {
 }
 async function run() {
   if (!canRun.value) return
-  if (usesCpSat.value) { await runPlans(); return }
-  if (!preset.value) return
-  running.value = true; message.value = ''; saved.value = ''; result.value = null
-  const search = new AbortController()
-  controller.value = search
-  try {
-    const [usedEq, usedGem] = await Promise.all([
-      db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
-    ])
-    equipmentAllocations.value = usedEq
-    result.value = await runOptimizeSingle({
-      equipment: equipment.value, gems: gems.value, stats: stats.value,
-      preset: workspace === 'castellan' ? { ...preset.value, castellanObjective: preset.value.castellanObjective ?? 'general' } : preset.value,
-      reservedEquipmentIds: usedEq.map(a => a.equipmentId), reservedGemIds: usedGem.map(a => a.gemId),
-      mode: mode.value
-    }, search.signal)
-    if (!result.value) message.value = (preset.value.requiredEquipmentStatId || preset.value.requiredEquipmentKeyword?.trim())
-      ? '各部位に未使用の装備が1件以上必要です。また、このプリセットの必須武具条件を満たす未使用の武具が必要です'
-      : '各部位に未使用の装備が1件以上必要です'
-    else commanderName.value = (preset.value?.name ?? roleLabel) + ' ' + new Date().toLocaleDateString('ja-JP')
-  } catch (e) {
-    message.value = e instanceof DOMException && e.name === 'AbortError' ? '探索を中止しました。' : String(e)
-  } finally { running.value = false; controller.value = null }
-}
-async function runPlans() {
-  if (running.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
   batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null; zeroDiagnostics.value = []; missingSlots.value = []
   controller.value = new AbortController()
@@ -205,14 +171,17 @@ async function runPlans() {
     presets.value = currentPresets
     const targets = targetCommanders.value
     const freePositions = Math.max(0, MAX_COMMANDERS - commanders.length)
-    if (allocationMode.value === 'new' && !freePositions) {
+    if (!reoptimizing.value && !freePositions) {
       message.value = roleLabel + 'の空き番号がありません。'
       return
     }
-    if (allocationMode.value !== 'new' && !targets.length) {
+    if (reoptimizing.value && !targets.length) {
       message.value = '再最適化する' + roleLabel + 'がありません。対象を選ぶか、ロックを解除してください。'; return
     }
-    const jobs: CpSatJob[] = allocationMode.value === 'new'
+    const chosenPreset = preset.value
+    const jobs: CpSatJob[] = singleBuild.value
+      ? (chosenPreset ? [{ preset: chosenPreset, ordinal: 1, priority: 1 }] : [])
+      : allocationMode.value === 'new'
       ? activePlans.value.flatMap(plan => {
           const chosen = presets.value.find(p => p.id === plan.presetId)
           if (!chosen) return []
@@ -229,29 +198,19 @@ async function runPlans() {
           previousGemIds: Object.fromEntries(c.gemAssignments.map(a => [a.slotType, a.gemId]))
         }))
     if (!jobs.length) { message.value = '最適化対象がありません'; return }
-    if (workspace === 'commander' && executionMode.value === 'local') {
-      try {
-        const check = await fetch(localEndpoint + '/health', { signal: controller.value.signal })
-        if (!check.ok) throw new Error('HTTP ' + check.status)
-      } catch {
-        throw new Error('PC内の最適化サーバーに接続できません。ローカルサーバーを起動し、CORS_ORIGINSにこのサイトのURLを設定してください。')
-      }
-    }
     const releasedIds = new Set(targets.map(c => c.id))
     const reservedEq = usedEq.filter(a => !releasedIds.has(a.commanderBuildId))
     const reservedGem = usedGem.filter(a => !releasedIds.has(a.commanderBuildId))
-    progress.value = browserBatch.value
-      ? `ブラウザで${jobs.length}体の城代の装備配分を計算中…`
-      : `CP-SATで${jobs.length}体の装備配分を計算中（最大${timeLimitSeconds.value}秒/段階）。`
     const input = {
       jobs, equipment: equipment.value, gems: gems.value, stats: stats.value,
       reservedEquipmentIds: reservedEq.map(a => a.equipmentId),
       reservedGemIds: reservedGem.map(a => a.gemId),
       maxAchieved: allocationMode.value === 'new' ? freePositions : undefined,
     }
-    const response = browserBatch.value ? await runCastellanPlan(input, controller.value.signal) : await optimizeCpSat({
+    const response = await optimizeCpSat({
       ...input, castellan: workspace === 'castellan', timeLimitSeconds: timeLimitSeconds.value, signal: controller.value.signal,
       endpoint: executionMode.value === 'local' ? localEndpoint : cpSatEndpoint,
+      local: executionMode.value === 'local',
       onProgress: (text: string) => { progress.value = text },
     })
     if (response.achieved === 0) {
@@ -275,14 +234,18 @@ async function runPlans() {
     if (allocationMode.value === 'new' && response.builds.length > freePositions) {
       throw Error('最適化サーバーを最新版に更新してから再実行してください。結果が' + roleLabel + 'の空き枠を超えています。')
     }
+    if (singleBuild.value) {
+      result.value = response.builds[0]?.result ?? null
+      if (result.value) commanderName.value = (chosenPreset?.name ?? roleLabel) + ' ' + new Date().toLocaleDateString('ja-JP')
+      else message.value = response.optimal ? '最低目標と必須装備条件を満たす構成がありません。' : '制限時間内に条件を満たす構成が見つかりませんでした。'
+      return
+    }
     previewInputs = { equipment: currentEquipment, gems: currentGems, stats: currentStats, presets: currentPresets }
     cpSatPreview.value = response.builds
     cpSatStatus.value = response.status
     cpSatOptimal.value = response.optimal
     cpSatUpperBound.value = response.upperBound ?? null
-    message.value = browserBatch.value
-      ? `${response.achieved} / ${response.requested}体の暫定候補。内容を確認して保存してください。`
-      : `${response.achieved} / ${response.requested}体が目標達成。理論上の上限：${response.upperBound ?? '算出不可'}体。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
+    message.value = `${response.achieved} / ${response.requested}体が目標達成。理論上の上限：${response.upperBound ?? '算出不可'}体。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
   } catch (e) {
     message.value = e instanceof Error && e.name === 'AbortError'
       ? '画面での待機を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
@@ -337,19 +300,19 @@ async function saveCpSat() {
         { title: '指定' + roleLabel + 'を再最適化', value: 'selected' },
         { title: roleLabel + '全体を再最適化（ロック中は除外）', value: 'all' },
       ]" label="最適化モード" />
-    <v-select v-if="!usesCpSat && presets.length" v-model="selected" :disabled="running || saving"
+    <v-select v-if="singleBuild && presets.length" v-model="selected" :disabled="running || saving"
       :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
-    <div v-if="!usesCpSat && preset" class="d-flex flex-wrap ga-2 mb-3">
+    <div v-if="singleBuild && preset" class="d-flex flex-wrap ga-2 mb-3">
       <v-chip v-for="target in preset.targets" :key="target.statId" size="small">
         {{ effectText(target.statId, target.minValue) }}以上
       </v-chip>
       <span v-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
     </div>
-    <p v-if="!usesCpSat && preset && workspace === 'castellan'" class="text-body-2 mb-3">
+    <p v-if="singleBuild && preset && workspace === 'castellan'" class="text-body-2 mb-3">
       最低目標を優先し、目標外の防衛効果を高めます。
       <template v-if="preset.castellanObjective === 'npc'">城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視し、略奪で失われる資源は加点しません。</template>
     </p>
-    <v-alert v-if="!usesCpSat && !presets.length" type="warning" variant="tonal" class="mb-3">
+    <v-alert v-if="singleBuild && !presets.length" type="warning" variant="tonal" class="mb-3">
       先に<router-link to="/presets">プリセットを登録</router-link>してください。
     </v-alert>
     <div v-if="allocationMode === 'new'" class="mb-3 text-body-2">
@@ -371,33 +334,32 @@ async function saveCpSat() {
     <v-alert v-if="!reoptimizing && !freePositions" type="warning" variant="tonal" class="mt-3">
       管理枠が埋まっています。既存の構成を使う場合は再最適化を選んでください。
     </v-alert>
-    <v-alert v-if="usesCpSat && !browserBatch && executionMode === 'local'" type="info" variant="tonal" class="mt-3">
+    <v-alert v-if="executionMode === 'local'" type="info" variant="tonal" class="mt-3">
       このPCでPython最適化サーバーを起動してください。
       <a href="https://github.com/takumi307/ggetool/blob/main/optimizer-service/LOCAL_WINDOWS.md" target="_blank" rel="noopener">起動手順</a>
     </v-alert>
-    <details class="my-4">
-      <summary class="text-body-2">計算設定{{ usesCpSat ? '（' + executionOptions.find(option => option.value === executionMode)?.title + '）' : '' }}</summary>
-      <v-select v-if="!usesCpSat" v-model="mode" :disabled="running || saving" :items="modeOptions"
-        label="最適化方法" class="mt-2" />
-      <template v-else>
-        <v-select v-model="executionMode" :disabled="running || committing"
-          :items="executionOptions"
-          label="最適化の実行先" class="mt-2" />
-        <p v-if="browserBatch" class="text-body-2 mb-3">ブラウザでNPC向けから割り当てます。結果は暫定候補です。</p>
-        <v-select v-else v-model="timeLimitSeconds" :disabled="running || committing"
-          :items="timeOptions"
-          label="計算時間（各段階）" />
-      </template>
-    </details>
+    <section class="mt-4" aria-label="計算設定">
+      <h3 class="text-subtitle-1 mb-2">計算設定</h3>
+      <v-row dense>
+        <v-col cols="12" sm="6">
+          <v-select v-model="executionMode" :disabled="running || committing || saving" :items="executionOptions"
+            label="最適化の実行先" density="comfortable" />
+        </v-col>
+        <v-col cols="12" sm="6">
+          <v-select v-model="timeLimitSeconds" :disabled="running || committing || saving" :items="timeOptions"
+            label="計算時間（各段階）" density="comfortable" />
+        </v-col>
+      </v-row>
+    </section>
     <div class="d-flex align-center ga-2 flex-wrap">
-      <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ browserBatch ? (reoptimizing ? '城代を再最適化' : '城代をまとめて作成') : usesCpSat ? (reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成') : '最適化を実行' }}</v-btn>
-      <v-btn v-if="running" color="warning" variant="outlined" @click="controller?.abort()">{{ usesCpSat && !browserBatch ? '待機を中断' : '探索を中止' }}</v-btn>
+      <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ singleBuild ? '最適化を実行' : reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成' }}</v-btn>
+      <v-btn v-if="running" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
     </div>
   </v-card>
   <v-progress-linear v-else-if="!message" indeterminate />
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">
-    <h3 class="text-subtitle-1 mb-2">{{ browserBatch ? '城代の最適化結果' : 'CP-SAT最適化結果' }}（{{ cpSatPreview.length }}体）</h3>
+    <h3 class="text-subtitle-1 mb-2">CP-SAT最適化結果（{{ cpSatPreview.length }}体）</h3>
     <v-chip :color="cpSatOptimal ? 'success' : 'warning'" class="mb-3">{{ cpSatOptimal ? 'OPTIMAL：最適性証明済み' : cpSatStatus + '：暫定解' }}</v-chip>
     <div v-if="cpSatUpperBound !== null" class="mb-3">達成 {{ cpSatPreview.length }}体 ／ 理論上の上限 {{ cpSatUpperBound }}体 <span class="text-medium-emphasis">（差 {{ Math.max(0, cpSatUpperBound - cpSatPreview.length) }}体）</span></div>
     <v-alert v-if="allocationMode !== 'new'" type="info" variant="tonal" class="mb-3">
@@ -449,7 +411,7 @@ async function saveCpSat() {
             <div class="mt-1">ジェム：{{ gemName(entry.result.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</div>
             <div v-for="(effect, i) in gemEffects(slot, entry.result)" :key="i" class="text-body-2">{{ effectText(effect.statId, effect.value) }}</div>
           </div>
-          <v-chip :color="entry.result.approximate ? 'warning' : 'success'" size="small">{{ entry.result.approximate ? "暫定解" : "全候補探索" }}</v-chip>
+          <v-chip :color="entry.result.approximate ? 'warning' : 'success'" size="small">{{ entry.result.approximate ? "暫定解" : "最適性証明済み" }}</v-chip>
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
@@ -464,8 +426,7 @@ async function saveCpSat() {
       <v-btn color="primary" :loading="saving" @click="saveResult">この構成を保存して装備を確保</v-btn>
     </v-card>
     <v-alert :type="result.approximate ? 'warning' : 'success'" class="mt-4">
-      {{ result.approximate ? '暫定最良解（候補絞り込み・探索打切りの可能性があり、最適性は保証されません）' : '全候補を探索しました' }}
-      ／ 評価 {{ result.evaluated.toLocaleString() }} 件
+      {{ result.approximate ? '暫定解（最適性未証明）' : '最適性証明済み' }}
     </v-alert>
     <v-card class="pa-3 mt-3">
       <h3 class="text-subtitle-1 mb-2">装備とジェムの組み合わせ</h3>

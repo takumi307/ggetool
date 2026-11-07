@@ -176,3 +176,20 @@ def test_roster_capacity_keeps_achievable_jobs_beyond_first_candidate():
     assert result["optimal"] is True
     assert result["achieved"] == 1
     assert result["builds"][0]["ordinal"] == 2
+
+
+def test_reoptimization_prefers_fewer_changes_in_empty_gem_slots():
+    p = payload()
+    p["jobs"] = [p["jobs"][0]]
+    p["jobs"][0]["targets"][0]["minValue"] = 15
+    p["jobs"][0]["previousEquipmentIds"] = {
+        "helmet": "h1", "weapon": "w1", "armor": "a1", "artifact": "r1"
+    }
+    p["gems"] = [
+        {"id": "small1", "allowedSlots": ["helmet"], "effects": [{"statId": "power", "value": 2}]},
+        {"id": "small2", "allowedSlots": ["weapon"], "effects": [{"statId": "power", "value": 3}]},
+        {"id": "large", "allowedSlots": ["armor"], "effects": [{"statId": "power", "value": 5}]},
+    ]
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] is True
+    assert result["builds"][0]["gemAssignments"] == [{"slotType": "armor", "gemId": "large"}]

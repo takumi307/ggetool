@@ -206,10 +206,17 @@ def optimize(data: Request):
                 var = x.get((j, slot, eid))
                 if var is not None:
                     retained.append(var)
-            for slot, gid in job.previousGemIds.items():
-                var = y.get((j, slot, gid))
-                if var is not None:
-                    retained.append(var)
+            if job.previousEquipmentIds or job.previousGemIds:
+                for slot in SLOTS:
+                    gid = job.previousGemIds.get(slot)
+                    if gid is None:
+                        # An empty slot is also part of the previous assignment.
+                        occupied = sum(y[j, slot, gem.id] for gem in gems_by_slot[slot])
+                        retained.append(active[j] - occupied)
+                    else:
+                        var = y.get((j, slot, gid))
+                        if var is not None:
+                            retained.append(var)
         model.Maximize((8 * n + 1) * sum(weights[j] * active[j] for j in range(n)) + sum(retained))
         second = cp_model.CpSolver()
         second.parameters.max_time_in_seconds = data.timeLimitSeconds

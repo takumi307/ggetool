@@ -104,7 +104,7 @@ export async function optimizeCpSat(input: {
     })
   }).catch(error => {
     if (input.signal?.aborted) throw error
-    throw new Error('計算データの送信で接続が途切れました。計算が開始済みの可能性があるため、少し待って再実行してください。', { cause: error })
+    throw new Error('計算データの送信で接続が途切れました。計算が開始済みの可能性があるため、少し待って再実行してください。')
   })
   if (response.status === 429) throw new Error('計算サーバーが別の計算を実行中です。完了後に再実行してください。')
   if (!response.ok) throw new Error('CP-SATジョブ開始エラー: HTTP ' + response.status)

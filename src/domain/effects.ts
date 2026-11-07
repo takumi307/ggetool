@@ -1,4 +1,3 @@
-import { castellanScoringStats } from './castellanStats'
 import { canonicalStatId } from './statAliases'
 import type { BuildPreset, EffectEntry, Equipment, StatDefinition } from './types'
 
@@ -28,17 +27,43 @@ export function effectiveValue(equipment: Totals, gem: Totals, caps: Map<string,
   return Math.min(weapon, cap) + Math.min(jewel, gemCap)
 }
 
-/** Give each castellan effect equal weight relative to its cap. */
+const NPC_PRIORITY_STATS = new Set(['C001', 'C002', 'C003', 'C007', 'CNG01', 'CNG02', 'CNG06', 'CNG07'])
+
+/** Compare capped effects by their caps and uncapped effects by the largest single item bonus. */
+export function castellanScoringScales(stats: StatDefinition[], items: { effects: EffectEntry[] }[]): Map<string, number> {
+  const scales = new Map<string, number>()
+  for (const item of items) {
+    const totals: Totals = {}
+    addEffects(totals, item.effects)
+    for (const [id, value] of Object.entries(totals)) scales.set(id, Math.max(scales.get(id) ?? 0, value))
+  }
+  for (const [id, cap] of knownCaps(stats)) {
+    if (cap > 0 && scales.has(id)) scales.set(id, cap)
+  }
+  return scales
+}
+
+export function castellanScoringStats(preset: BuildPreset, scales: Map<string, number>) {
+  const objective = preset.castellanObjective
+  const targets = new Set(preset.targets.map(target => canonicalStatId(target.statId)))
+  return [...scales]
+    .filter(([id, scale]) => scale > 0 && !targets.has(id) &&
+      (objective === 'npc' || !id.startsWith('CNG')) &&
+      (objective === 'lord' || !id.startsWith('CPG')) &&
+      (objective !== 'npc' || id !== 'C011'))
+    .map(([id, scale]) => ({ id, scale, weight: objective === 'npc' && NPC_PRIORITY_STATS.has(id) ? 5 : 1 }))
+}
+
 export function castellanQuality(
   objective: NonNullable<BuildPreset['castellanObjective']>,
   equipment: Totals,
   gems: Totals,
   caps: Map<string, number>,
-  scoringStats = castellanScoringStats(objective)
+  scoringStats: ReturnType<typeof castellanScoringStats>
 ): number {
   return scoringStats.reduce((total, stat) => {
-    const ratio = effectiveValue(equipment, gems, caps, stat.id) / (caps.get(stat.id) || stat.cap || 1)
-    return total + (objective === 'lord' ? Math.sqrt(ratio) : ratio)
+    const ratio = effectiveValue(equipment, gems, caps, stat.id) / stat.scale
+    return total + stat.weight * (objective === 'lord' ? Math.sqrt(ratio) : ratio)
   }, 0)
 }
 

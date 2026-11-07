@@ -1,4 +1,4 @@
-import { buildBreakdown, castellanQuality, knownCaps, requiredEquipmentMatcher, targetActual } from './effects'
+import { buildBreakdown, castellanQuality, castellanScoringScales, castellanScoringStats, knownCaps, requiredEquipmentMatcher, targetActual } from './effects'
 import { optimizeSingle, type OptimizeInput, type OptimizationResult } from './optimizer'
 import { SLOT_TYPES } from './types'
 import type { CpSatBuild, CpSatJob, CpSatOutcome } from './cpSatClient'
@@ -18,7 +18,8 @@ export function optimizeCastellanPlan(input: CastellanPlanInput): CpSatOutcome {
   for (const job of jobs) {
     if (builds.length >= (input.maxAchieved ?? jobs.length)) break
     const result = optimizeSingle({
-      ...input, preset: job.preset, mode: 'auto', maxEvaluations: 20_000,
+      ...input, preset: { ...job.preset, castellanObjective: job.preset.castellanObjective ?? 'general' },
+      mode: 'auto', maxEvaluations: 20_000,
       reservedEquipmentIds: [...usedEquipment], reservedGemIds: [...usedGems],
     })
     if (!result || result.shortfalls.some(target => target.missing > 1e-8)) continue
@@ -31,9 +32,12 @@ export function optimizeCastellanPlan(input: CastellanPlanInput): CpSatOutcome {
 }
 
 function balanceLordBuilds(input: CastellanPlanInput, builds: CpSatBuild[]) {
+  if (builds.length < 2) return
   const equipment = new Map(input.equipment.map(item => [item.id, item]))
   const gems = new Map(input.gems.map(item => [item.id, item]))
   const caps = knownCaps(input.stats)
+  const scales = castellanScoringScales(input.stats, [...input.equipment, ...input.gems])
+  const scoringByJob = new Map(builds.map(({ job }) => [job, castellanScoringStats(job.preset, scales)]))
 
   function evaluate(job: CpSatJob, result: OptimizationResult) {
     const weapons = Object.values(result.equipmentIds).flatMap(id => {
@@ -58,7 +62,7 @@ function balanceLordBuilds(input: CastellanPlanInput, builds: CpSatBuild[]) {
       const raw = parts.equipment[statId] ?? 0
       return raw > cap ? [{ statId, cap, raw }] : []
     })
-    return { result: { ...result, totals, shortfalls, overflow }, quality: castellanQuality('lord', parts.equipment, parts.gem, caps) }
+    return { result: { ...result, totals, shortfalls, overflow }, quality: castellanQuality('lord', parts.equipment, parts.gem, caps, scoringByJob.get(job)!) }
   }
 
   const scores = builds.map(build => evaluate(build.job, build.result)?.quality ?? 0)

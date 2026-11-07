@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { CASTELLAN_STAT_SEEDS, castellanScoringStats, mergeCastellanStats } from '@/domain/castellanStats'
-import { addEffects, effectiveValue, knownCaps } from '@/domain/effects'
+import { CASTELLAN_STAT_SEEDS, mergeCastellanStats } from '@/domain/castellanStats'
+import { addEffects, castellanScoringScales, castellanScoringStats, effectiveValue, knownCaps } from '@/domain/effects'
 import { optimizeCastellanPlan } from '@/domain/castellanPlanner'
+import { optimizeSingle } from '@/domain/optimizer'
 import { SLOT_TYPES, type BuildPreset, type Equipment, type Gem } from '@/domain/types'
+
+const makePreset = (castellanObjective?: BuildPreset['castellanObjective']): BuildPreset => ({
+  id: 'test', name: 'test', castellanObjective, targets: [], priorityStats: [],
+  maximizeStats: [], defaultCount: 1, priority: 1, description: '',
+})
+
+const makeEquipment = (id: string, slotType: Equipment['slotType'], effects: Equipment['effects'] = []): Equipment => ({
+  id, name: id, slotType, effects, memo: '', createdAt: '', updatedAt: '',
+})
 
 describe('castellan caps and assignments', () => {
   it('shares the courtyard cap, keeps NPC and lord gem caps separate', () => {
@@ -48,7 +58,63 @@ describe('castellan caps and assignments', () => {
     const caps = knownCaps(CASTELLAN_STAT_SEEDS)
     expect(effectiveValue({ C012: 792 }, {}, caps, 'C012')).toBe(792)
     expect(effectiveValue({ C012: 805 }, {}, caps, 'C012')).toBe(805)
-    expect(castellanScoringStats('npc')).not.toContain(guardian)
+    const scales = castellanScoringScales(CASTELLAN_STAT_SEEDS, [{ effects: [{ statId: 'C012', value: 805 }] }])
+    expect(scales.get(guardian.id)).toBe(805)
+  })
+
+  it('scores NPC wall capacity and combat bonuses five times higher and skips resource loss', () => {
+    const scales = new Map(['C001', 'C002', 'C003', 'C007', 'CNG01', 'CNG02', 'CNG06', 'CNG07', 'C004', 'C011', 'CPG01']
+      .map(id => [id, 100]))
+    const preset = makePreset('npc')
+    preset.targets = [{ statId: 'CG003', minValue: 40 }]
+    const scoring = castellanScoringStats(preset, scales)
+    expect(scoring.filter(stat => stat.weight === 5).map(stat => stat.id))
+      .toEqual(['C001', 'C002', 'C007', 'CNG01', 'CNG02', 'CNG06', 'CNG07'])
+    expect(scoring.filter(stat => stat.weight === 1).map(stat => stat.id)).toEqual(['C004'])
+    expect(castellanScoringStats(makePreset('lord'), scales).map(stat => stat.id)).toContain('C011')
+  })
+
+  it('meets the target before improving other effects in precise and fast searches', () => {
+    const preset = makePreset('npc')
+    preset.targets = [{ statId: 'C001', minValue: 100 }]
+    const equipment = [
+      ...SLOT_TYPES.filter(slot => slot !== 'helmet').map(slot => makeEquipment(slot, slot)),
+      ...Array.from({ length: 6 }, (_, index) => makeEquipment('surplus-' + index, 'helmet', [
+        { statId: 'C001', value: 140 }, { statId: 'C011', value: 50 },
+      ])),
+      makeEquipment('shortfall', 'helmet', [{ statId: 'C001', value: 99 }, { statId: 'C007', value: 50 }]),
+      makeEquipment('best', 'helmet', [{ statId: 'C001', value: 100 }, { statId: 'C007', value: 15 }]),
+    ]
+    const gems: Gem[] = [
+      ...Array.from({ length: 12 }, (_, index): Gem => ({
+        id: 'wall-' + index, name: 'wall', allowedSlots: ['weapon'], effects: [{ statId: 'CNG04', value: 60 }],
+        memo: '', createdAt: '', updatedAt: '',
+      })),
+      {
+        id: 'courtyard', name: 'courtyard', allowedSlots: ['weapon'], effects: [{ statId: 'CNG02', value: 20 }],
+        memo: '', createdAt: '', updatedAt: '',
+      },
+    ]
+    for (const mode of ['precise', 'fast'] as const) {
+      const result = optimizeSingle({ preset, equipment, gems, stats: CASTELLAN_STAT_SEEDS, mode })
+      expect(result?.equipmentIds.helmet).toBe('best')
+      expect(result?.shortfalls[0].missing).toBe(0)
+      expect(result?.gemAssignments).toEqual([{ slotType: 'weapon', gemId: 'courtyard' }])
+    }
+  })
+
+  it('uses other defense effects for older castellan presets without a defense mode', () => {
+    const preset = makePreset()
+    preset.targets = [{ statId: 'C001', minValue: 100 }]
+    const equipment = [
+      ...SLOT_TYPES.filter(slot => slot !== 'helmet').map(slot => makeEquipment(slot, slot)),
+      makeEquipment('surplus', 'helmet', [{ statId: 'C001', value: 140 }]),
+      makeEquipment('best', 'helmet', [{ statId: 'C001', value: 100 }, { statId: 'C003', value: 40 }]),
+    ]
+    const result = optimizeCastellanPlan({
+      equipment, gems: [], stats: CASTELLAN_STAT_SEEDS, jobs: [{ preset, ordinal: 1, priority: 1 }],
+    })
+    expect(result.builds[0].result.equipmentIds.helmet).toBe('best')
   })
 
   it('reserves NPC gear and balances the requested lord builds without duplicates', () => {

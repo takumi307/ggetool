@@ -29,7 +29,18 @@ const missingSlots = ref<string[]>([])
 const cpSatOptimal = ref(false)
 const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
-const executionMode = ref<'render' | 'local'>(cpSatEndpoint ? 'render' : 'local')
+const executionMode = ref<'browser' | 'render' | 'local'>(workspace === 'castellan' ? 'browser' : cpSatEndpoint ? 'render' : 'local')
+const executionOptions = [
+  ...(workspace === 'castellan' ? [{ title: 'ブラウザ', value: 'browser' }] : []),
+  ...(cpSatEndpoint ? [{ title: 'Render（クラウド）', value: 'render' }] : []),
+  { title: 'このPC', value: 'local' },
+]
+const timeOptions = computed(() => executionMode.value === 'local'
+  ? [{ title: '1分', value: 60 }, { title: '5分', value: 300 }, { title: '10分', value: 600 }, { title: '30分', value: 1800 }]
+  : [{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }])
+watch(executionMode, () => {
+  if (!timeOptions.value.some(option => option.value === timeLimitSeconds.value)) timeLimitSeconds.value = 60
+})
 const localEndpoint = 'http://127.0.0.1:8765'
 const controller = ref<AbortController | null>(null)
 onBeforeUnmount(() => controller.value?.abort())
@@ -70,7 +81,7 @@ const activePlans = computed(() => {
   return plans.value.filter(p => p.enabled).sort((a, b) => npcRank(a) - npcRank(b) || a.priority - b.priority)
 })
 const usesCpSat = computed(() => allocationMode.value !== 'single')
-const browserBatch = computed(() => workspace === 'castellan' && usesCpSat.value)
+const browserBatch = computed(() => usesCpSat.value && executionMode.value === 'browser')
 const reoptimizing = computed(() => allocationMode.value === 'selected' || allocationMode.value === 'all')
 const availableSlots = computed(() => {
   const released = new Set(targetCommanders.value.map(commander => commander.id))
@@ -163,7 +174,8 @@ async function run() {
     ])
     equipmentAllocations.value = usedEq
     result.value = await runOptimizeSingle({
-      equipment: equipment.value, gems: gems.value, stats: stats.value, preset: preset.value,
+      equipment: equipment.value, gems: gems.value, stats: stats.value,
+      preset: workspace === 'castellan' ? { ...preset.value, castellanObjective: preset.value.castellanObjective ?? 'general' } : preset.value,
       reservedEquipmentIds: usedEq.map(a => a.equipmentId), reservedGemIds: usedGem.map(a => a.gemId),
       mode: mode.value
     }, search.signal)
@@ -217,7 +229,7 @@ async function runPlans() {
           previousGemIds: Object.fromEntries(c.gemAssignments.map(a => [a.slotType, a.gemId]))
         }))
     if (!jobs.length) { message.value = '最適化対象がありません'; return }
-    if (!browserBatch.value && executionMode.value === 'local') {
+    if (workspace === 'commander' && executionMode.value === 'local') {
       try {
         const check = await fetch(localEndpoint + '/health', { signal: controller.value.signal })
         if (!check.ok) throw new Error('HTTP ' + check.status)
@@ -238,7 +250,7 @@ async function runPlans() {
       maxAchieved: allocationMode.value === 'new' ? freePositions : undefined,
     }
     const response = browserBatch.value ? await runCastellanPlan(input, controller.value.signal) : await optimizeCpSat({
-      ...input, timeLimitSeconds: timeLimitSeconds.value, signal: controller.value.signal,
+      ...input, castellan: workspace === 'castellan', timeLimitSeconds: timeLimitSeconds.value, signal: controller.value.signal,
       endpoint: executionMode.value === 'local' ? localEndpoint : cpSatEndpoint,
       onProgress: (text: string) => { progress.value = text },
     })
@@ -249,7 +261,7 @@ async function runPlans() {
       const availableGems = gems.value.filter(g => !reservedGemSet.has(g.id))
       const slots = SLOT_TYPES
       missingSlots.value = slots.filter(slot => !availableEq.some(e => e.slotType === slot)).map(slot => SLOT_LABELS[slot])
-      const capMap = new Map(stats.value.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [canonicalStatId(s.id), s.cap!]))
+      const capMap = knownCaps(stats.value)
       const effectSum = (effects: { statId: string; value: number }[], id: string) => effects.reduce((n, e) => n + (canonicalStatId(e.statId) === id ? e.value : 0), 0)
       const distinctPresets = [...new Map(jobs.map(j => [j.preset.id, j.preset])).values()]
       zeroDiagnostics.value = distinctPresets.flatMap(p => p.targets.map(t => {
@@ -331,9 +343,12 @@ async function saveCpSat() {
       <v-chip v-for="target in preset.targets" :key="target.statId" size="small">
         {{ effectText(target.statId, target.minValue) }}以上
       </v-chip>
-      <span v-if="preset.castellanObjective" class="text-body-2">{{ preset.castellanObjective === 'npc' ? '通常＋NPC効果を最大化' : '通常＋対城主効果をバランス配分' }}</span>
-      <span v-else-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
+      <span v-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
     </div>
+    <p v-if="!usesCpSat && preset && workspace === 'castellan'" class="text-body-2 mb-3">
+      最低目標を優先し、目標外の防衛効果を高めます。
+      <template v-if="preset.castellanObjective === 'npc'">城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視し、略奪で失われる資源は加点しません。</template>
+    </p>
     <v-alert v-if="!usesCpSat && !presets.length" type="warning" variant="tonal" class="mb-3">
       先に<router-link to="/presets">プリセットを登録</router-link>してください。
     </v-alert>
@@ -360,17 +375,17 @@ async function saveCpSat() {
       このPCでPython最適化サーバーを起動してください。
       <a href="https://github.com/takumi307/ggetool/blob/main/optimizer-service/LOCAL_WINDOWS.md" target="_blank" rel="noopener">起動手順</a>
     </v-alert>
-    <p v-if="browserBatch" class="text-body-2 mt-3 mb-4">ブラウザでNPC向けから割り当て、残りを配分します。結果は暫定候補です。</p>
-    <details v-else class="my-4">
-      <summary class="text-body-2">計算設定{{ usesCpSat ? (executionMode === 'local' ? '（このPC）' : '（クラウド）') : '' }}</summary>
+    <details class="my-4">
+      <summary class="text-body-2">計算設定{{ usesCpSat ? '（' + executionOptions.find(option => option.value === executionMode)?.title + '）' : '' }}</summary>
       <v-select v-if="!usesCpSat" v-model="mode" :disabled="running || saving" :items="modeOptions"
         label="最適化方法" class="mt-2" />
       <template v-else>
         <v-select v-model="executionMode" :disabled="running || committing"
-          :items="cpSatEndpoint ? [{ title: 'Render（クラウド）', value: 'render' }, { title: 'このPC', value: 'local' }] : [{ title: 'このPC', value: 'local' }]"
+          :items="executionOptions"
           label="最適化の実行先" class="mt-2" />
-        <v-select v-model="timeLimitSeconds" :disabled="running || committing"
-          :items="executionMode === 'local' ? [{ title: '1分', value: 60 }, { title: '5分', value: 300 }, { title: '10分', value: 600 }, { title: '30分', value: 1800 }] : [{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]"
+        <p v-if="browserBatch" class="text-body-2 mb-3">ブラウザでNPC向けから割り当てます。結果は暫定候補です。</p>
+        <v-select v-else v-model="timeLimitSeconds" :disabled="running || committing"
+          :items="timeOptions"
           label="計算時間（各段階）" />
       </template>
     </details>
@@ -405,7 +420,7 @@ async function saveCpSat() {
             <div v-for="(effect, i) in itemEffects(slot, entry.result)" :key="i" class="text-body-2">{{ effectText(effect.statId, effect.value) }}</div>
             <div>ジェム：{{ gemName(entry.result.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</div>
           </div>
-          <div v-if="browserBatch" class="mt-3">
+          <div v-if="workspace === 'castellan'" class="mt-3">
             <strong>上限適用後の効果</strong>
             <div v-for="(value, id) in shownTotals(entry.result)" :key="id">{{ effectText(String(id), value) }}</div>
           </div>

@@ -193,3 +193,46 @@ def test_reoptimization_prefers_fewer_changes_in_empty_gem_slots():
     result = client.post("/optimize", json=p).json()
     assert result["optimal"] is True
     assert result["builds"][0]["gemAssignments"] == [{"slotType": "armor", "gemId": "large"}]
+
+def test_castellan_prioritizes_targets_and_weighted_secondary_effects():
+    p = payload()
+    p["castellan"] = True
+    p["jobs"] = p["jobs"][:1]
+    p["jobs"][0]["scoring"] = [
+        {"id": "C007", "scale": 50, "weight": 5},
+        {"id": "C004", "scale": 160, "weight": 1},
+    ]
+    p["equipment"][0]["effects"] += [{"statId": "C004", "value": 160}, {"statId": "C011", "value": 50}]
+    p["equipment"][1]["effects"] += [{"statId": "C007", "value": 15}]
+    p["equipment"].append({"id": "short", "slotType": "helmet", "effects": [
+        {"statId": "power", "value": 9}, {"statId": "C007", "value": 50},
+    ]})
+    response = client.post("/optimize", json=p)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["optimal"] is True
+    assert body["builds"][0]["equipmentIds"]["helmet"] == "h2"
+
+def test_castellan_uses_shared_courtyard_and_separate_wall_gem_caps():
+    p = payload()
+    p["castellan"] = True
+    p["jobs"] = p["jobs"][:1]
+    p["stats"] += [
+        {"id": "C003", "capStatus": "known", "cap": 100},
+        {"id": "C007", "capStatus": "known", "cap": 50},
+        {"id": "CG007", "capStatus": "known", "cap": 10},
+    ]
+    for item in p["equipment"][:2]:
+        item["effects"] += [{"statId": "C003", "value": 90}, {"statId": "C007", "value": 60}]
+    p["gems"] = [{"id": "gem", "allowedSlots": ["helmet"], "effects": [
+        {"statId": "C003", "value": 30}, {"statId": "C007", "value": 20},
+    ]}]
+    p["jobs"][0]["targets"] = [
+        {"statId": "C003", "minValue": 100}, {"statId": "C007", "minValue": 60},
+    ]
+    body = client.post("/optimize", json=p).json()
+    assert [t["actual"] for t in body["builds"][0]["shortfalls"]] == [100, 60]
+    for i in range(2):
+        p["jobs"][0]["targets"][i]["minValue"] += 1
+        assert client.post("/optimize", json=p).json()["achieved"] == 0
+        p["jobs"][0]["targets"][i]["minValue"] -= 1

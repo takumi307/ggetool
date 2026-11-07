@@ -91,6 +91,8 @@ try {
   await visible(page.getByText('2体を一括更新しました', { exact: false }))
 
   await link('保存済み司令官を確認').click()
+  await page.waitForURL(root + '/#/commanders')
+  await visible(page.getByRole('heading', { name: '保存済み司令官', exact: true }))
   await page.reload()
   await visible(card('検証-locked').getByText('ロック中', { exact: true }))
   await visible(card('検証-locked').getByText(/兜：locked-helmet/))

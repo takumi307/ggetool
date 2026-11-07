@@ -195,9 +195,15 @@ try {
   await option('Render（クラウド）').click()
   await select('計算時間（各段階）').press('ArrowDown')
   await option('30秒').click()
+  let interruptedHealthCheck = false
+  await page.route('**/health', async route => {
+    interruptedHealthCheck = true
+    await route.abort('failed')
+  }, { times: 1 })
   const submitted = page.waitForRequest(req => req.method() === 'POST' && req.url().endsWith('/jobs'))
   await button('CP-SATで新規作成').click()
   const castellanRequest = (await submitted).postDataJSON()
+  assert.equal(interruptedHealthCheck, true)
   assert.equal(castellanRequest.castellan, true)
   assert.equal(castellanRequest.timeLimitSeconds, 30)
   assert.ok(castellanRequest.jobs.some(job => job.scoring.some(stat => stat.id === 'C001' && stat.weight === 5)))

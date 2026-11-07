@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch, onBeforeUnmount } from 'vue'
+import EquipmentAvailability from '@/components/EquipmentAvailability.vue'
+import { equipmentAvailability } from '@/domain/equipmentAvailability'
 import { canonicalStatId } from '@/domain/statAliases'
 import { useRoute } from 'vue-router'
 import type { StoreSnapshot } from '@/repositories/types'
 import { useDb, useAppStore } from '@/stores/app'
 import { saveCommander, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignments } from '@/domain/commanderService'
 import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob } from '@/domain/cpSatClient'
-import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
+import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type EquipmentAllocation, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
 import { optimizeSingle, type OptimizationResult, type OptimizerMode } from '@/domain/optimizer'
 
 const db = useDb()
@@ -25,13 +27,15 @@ const missingSlots = ref<string[]>([])
 const cpSatOptimal = ref(false)
 const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
-const executionMode = ref<'render' | 'local'>('render')
+const executionMode = ref<'render' | 'local'>(cpSatEndpoint ? 'render' : 'local')
 const localEndpoint = 'http://127.0.0.1:8765'
 const controller = ref<AbortController | null>(null)
 onBeforeUnmount(() => controller.value?.abort())
 const committing = ref(false)
-const allocationMode = ref<'new' | 'selected' | 'all'>('new')
+const allocationMode = ref<'single' | 'new' | 'selected' | 'all'>('single')
 const existingCommanders = ref<CommanderBuild[]>([])
+const equipmentAllocations = ref<EquipmentAllocation[]>([])
+const ready = ref(false)
 const selectedCommanderIds = ref<string[]>([])
 const replacementPreview = computed(() => cpSatPreview.value.filter(e => Boolean(e.job.commanderId)))
 const movedItems = computed(() => replacementPreview.value.reduce((total, entry) => {
@@ -59,12 +63,28 @@ const commanderChoices = computed(() => eligibleCommanders.value.map(c => ({
 })))
 
 const activePlans = computed(() => plans.value.filter(p => p.enabled).sort((a,b) => a.priority - b.priority))
-const usesCpSat = computed(() => allocationMode.value !== 'new' || activePlans.value.length > 0)
+const usesCpSat = computed(() => allocationMode.value !== 'single')
+const reoptimizing = computed(() => allocationMode.value === 'selected' || allocationMode.value === 'all')
+const availableSlots = computed(() => {
+  const released = new Set(targetCommanders.value.map(commander => commander.id))
+  return equipmentAvailability(equipment.value, equipmentAllocations.value.filter(item => !released.has(item.commanderBuildId)))
+})
+const pendingPlanCount = computed(() => activePlans.value.reduce((sum, plan) => {
+  if (!presets.value.some(preset => preset.id === plan.presetId)) return sum
+  const completed = existingCommanders.value.filter(commander => commander.presetId === plan.presetId).length
+  return sum + Math.max(0, plan.count - completed)
+}, 0))
+const freePositions = computed(() => Math.max(0, MAX_COMMANDERS - existingCommanders.value.length))
+const canRun = computed(() => ready.value && !running.value && !committing.value && !saving.value &&
+  availableSlots.value.every(slot => slot.available > 0) &&
+  (reoptimizing.value ? targetCommanders.value.length > 0 : freePositions.value > 0) &&
+  (allocationMode.value === 'new' ? pendingPlanCount.value > 0 : usesCpSat.value || Boolean(preset.value)) &&
+  (!usesCpSat.value || executionMode.value === 'local' || Boolean(cpSatEndpoint)))
 const mode = ref<OptimizerMode>('auto')
 const modeOptions = [{ title: '自動（推奨）', value: 'auto' }, { title: '高精度', value: 'precise' }, { title: '高速', value: 'fast' }]
 const presets = ref<BuildPreset[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), stats = ref<StatDefinition[]>([])
 const selected = ref(''), result = ref<OptimizationResult | null>(null), message = ref(''), running = ref(false)
-watch([allocationMode, selectedCommanderIds, executionMode, timeLimitSeconds], () => {
+watch([allocationMode, selectedCommanderIds, executionMode, timeLimitSeconds, selected, mode], () => {
   cpSatPreview.value = []
   zeroDiagnostics.value = []
   missingSlots.value = []
@@ -79,28 +99,47 @@ const gemName = (id?: string) => gems.value.find(g => g.id === id)?.name ?? 'な
 const effectText = (id: string, value: number) => `${statName(id)}：${value}${stats.value.find(s => s.id === id)?.unit ?? '%'}`
 const itemEffects = (slot: SlotType, r: OptimizationResult) => equipment.value.find(e => e.id === r.equipmentIds[slot])?.effects ?? []
 const gemEffects = (slot: SlotType, r: OptimizationResult) => gems.value.find(g => g.id === r.gemAssignments.find(a => a.slotType === slot)?.gemId)?.effects ?? []
-onMounted(async () => {
-  ;[presets.value, equipment.value, gems.value, stats.value, plans.value] = await Promise.all([
-    db.repo('presets').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll(), db.repo('plans').getAll()
-  ])
+function applyRequestedMode() {
   const requestedPresetId = typeof route.query.presetId === 'string' ? route.query.presetId : ''
-  selected.value = presets.value.some(p => p.id === requestedPresetId) ? requestedPresetId : (presets.value[0]?.id ?? '')
-  existingCommanders.value = await db.repo('commanders').getAll()
-  const settings = await db.repo('settings').get('app')
-  if (settings?.optimizerId === 'precise' || settings?.optimizerId === 'fast') mode.value = settings.optimizerId
+  const requestedPreset = presets.value.find(p => p.id === requestedPresetId)
+  if (requestedPreset) selected.value = requestedPreset.id
+  if (route.query.mode === 'single' || requestedPreset) allocationMode.value = 'single'
+}
+watch(() => [route.query.presetId, route.query.mode], () => {
+  if (!running.value && !committing.value && !saving.value) applyRequestedMode()
+})
+async function refreshAvailability() {
+  ;[existingCommanders.value, equipmentAllocations.value] = await Promise.all([
+    db.repo('commanders').getAll(), db.repo('equipmentAllocations').getAll(),
+  ])
+}
+onMounted(async () => {
+  try {
+    ;[presets.value, equipment.value, gems.value, stats.value, plans.value] = await Promise.all([
+      db.repo('presets').getAll(), db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll(), db.repo('plans').getAll(),
+    ])
+    selected.value = presets.value[0]?.id ?? ''
+    allocationMode.value = activePlans.value.length ? 'new' : 'single'
+    applyRequestedMode()
+    await refreshAvailability()
+    const settings = await db.repo('settings').get('app')
+    if (settings?.optimizerId === 'precise' || settings?.optimizerId === 'fast') mode.value = settings.optimizerId
+    ready.value = true
+  } catch (error) { message.value = String(error) }
 })
 async function saveResult() {
-  if (!result.value || !preset.value) return
+  if (running.value || saving.value || !result.value || !preset.value) return
   saving.value = true; message.value = ''; saved.value = ''
   try {
     const build = await saveCommander(db, commanderName.value, preset.value.id, result.value)
     saved.value = '「' + build.name + '」を保存しました。装備・ジェムは使用中として確保されます。'
     result.value = null
+    await refreshAvailability()
     await app.refreshCounts(db)
   } catch (e) { message.value = String(e) } finally { saving.value = false }
 }
 async function run() {
-  if (running.value || committing.value || saving.value) return
+  if (!canRun.value) return
   if (usesCpSat.value) { await runPlans(); return }
   if (!preset.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
@@ -108,6 +147,7 @@ async function run() {
     const [usedEq, usedGem] = await Promise.all([
       db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
     ])
+    equipmentAllocations.value = usedEq
     // Yield once to let the progress indicator render.
     await new Promise(resolve => setTimeout(resolve, 0))
     result.value = optimizeSingle({
@@ -130,6 +170,7 @@ async function runPlans() {
       db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('stats').getAll(), db.repo('presets').getAll()
     ])
     existingCommanders.value = commanders
+    equipmentAllocations.value = usedEq
     equipment.value = currentEquipment
     gems.value = currentGems
     stats.value = currentStats
@@ -231,7 +272,7 @@ async function saveCpSat() {
       })), previewInputs)
       saved.value = `${cpSatPreview.value.length}体を一括更新しました（変更した装備・ジェムの割当：${movedItems.value}箇所）`
       cpSatPreview.value = []
-      existingCommanders.value = await db.repo('commanders').getAll()
+      await refreshAvailability()
       await app.refreshCounts(db)
       return
     }
@@ -243,6 +284,7 @@ async function saveCpSat() {
     }
     saved.value = `${count}体の${roleLabel}を保存しました`
     cpSatPreview.value = []
+    await refreshAvailability()
     await app.refreshCounts(db)
   } catch (e) {
     cpSatPreview.value = []
@@ -254,28 +296,67 @@ async function saveCpSat() {
 </script>
 <template>
   <h2 class="text-h6 mb-3">{{ roleLabel }}の最適化</h2>
-  <v-alert type="info" variant="tonal" class="mb-4">4部位の装備と、各部位に最大1個のジェムを組み合わせます。装備・ジェムは重複使用しません。目標達成を優先し、その後に指定した効果を優先順位順で比較します。</v-alert>
-  <v-alert v-if="activePlans.length" type="info" variant="tonal" class="mb-3">有効な計画の不足分を、{{ roleLabel }}35枠の空き数までCP-SATで同時に最適化します。計算結果を確認してから保存できます。OPTIMALは最適性証明済み、FEASIBLEは暫定解です。通常モードでは既存の{{ roleLabel }}は変更しません。</v-alert>
-  <v-select v-if="activePlans.length || eligibleCommanders.length" v-model="allocationMode" :disabled="running || committing || saving"
-    :items="[{title:'新規作成（既存装備を保護）',value:'new'},{title:'指定' + roleLabel + 'を再最適化',value:'selected'},{title:roleLabel + '全体を再最適化（ロック中は除外）',value:'all'}]"
-    label="最適化モード" class="mb-3" />
-  <v-select v-if="allocationMode === 'selected'" v-model="selectedCommanderIds" :disabled="running || committing" :items="commanderChoices"
-    :label="'再最適化する' + roleLabel + '（複数選択）'" multiple chips closable-chips class="mb-3" />
-  <v-alert v-if="allocationMode !== 'new'" type="warning" variant="tonal" class="mb-3">
-    既存{{ roleLabel }}の武具・ジェムを含めて再配分します。ロック中の{{ roleLabel }}は変更しません。
-    全員が目標達成した場合のみ一括保存できます。途中の結果は既存データを変更しません。
-  </v-alert>
-  <v-select v-model="selected" :disabled="usesCpSat || running || saving" :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
-  <v-alert v-if="!presets.length" type="warning" class="mb-3">プリセットが登録されていません。先に<router-link to="/presets">プリセットを登録</router-link>してください。</v-alert>
-  <v-alert v-if="usesCpSat && executionMode === 'render' && !cpSatEndpoint" type="warning" variant="tonal" class="mb-3">CP-SATサーバーが未設定です。VITE_OPTIMIZER_API_URLをCloudflareのビルド環境に設定してください。</v-alert>
-  <v-select v-if="!usesCpSat" v-model="mode" :disabled="running || saving" :items="modeOptions" label="最適化方法" hint="高速は暫定解。高精度も探索上限到達時は暫定解です。" persistent-hint class="mb-3" />
-  <v-select v-if="usesCpSat" v-model="executionMode" :disabled="running || committing" :items="[{ title: 'Render（クラウド）', value: 'render' }, { title: 'このPC（ローカルCP-SAT）', value: 'local' }]" label="最適化の実行先" class="mb-3" />
-  <v-alert v-if="usesCpSat && executionMode === 'local'" type="info" variant="tonal" class="mb-3">PCにPython版の最適化サーバーを起動してください（127.0.0.1:8765）。計算はこのPCで実行し、装備データはRenderに送信しません。セットアップ手順は optimizer-service/LOCAL_WINDOWS.md を参照してください。</v-alert>
-  <v-select v-if="usesCpSat" v-model="timeLimitSeconds" :disabled="running || committing" :items="executionMode === 'local' ? [{ title: '1分', value: 60 }, { title: '5分', value: 300 }, { title: '10分', value: 600 }, { title: '30分', value: 1800 }] : [{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]" label="CP-SAT計算時間（各段階）" class="mb-3" />
-  <div class="d-flex align-center ga-2 flex-wrap">
-    <v-btn color="primary" :disabled="running || committing || saving || (!usesCpSat && !preset) || (usesCpSat && executionMode === 'render' && !cpSatEndpoint) || (allocationMode !== 'new' && !targetCommanders.length)" :loading="running" @click="run">{{ usesCpSat ? (allocationMode === 'new' ? 'CP-SATで新規作成' : 'CP-SATで再最適化') : '最適化を実行' }}</v-btn>
-    <v-btn v-if="running && usesCpSat" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
-  </div>
+  <v-card v-if="ready" variant="outlined" class="pa-4">
+    <v-select v-model="allocationMode" :disabled="running || committing || saving"
+      :items="[
+        { title: '1体だけ作る', value: 'single' },
+        { title: '作成計画の不足分をまとめて作る', value: 'new' },
+        { title: '指定' + roleLabel + 'を再最適化', value: 'selected' },
+        { title: roleLabel + '全体を再最適化（ロック中は除外）', value: 'all' },
+      ]" label="最適化モード" />
+    <v-select v-if="!usesCpSat && presets.length" v-model="selected" :disabled="running || saving"
+      :items="presets.map(p => ({ title: p.name, value: p.id }))" label="ビルドプリセット" />
+    <div v-if="!usesCpSat && preset" class="d-flex flex-wrap ga-2 mb-3">
+      <v-chip v-for="target in preset.targets" :key="target.statId" size="small">
+        {{ effectText(target.statId, target.minValue) }}以上
+      </v-chip>
+      <span v-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
+    </div>
+    <v-alert v-if="!usesCpSat && !presets.length" type="warning" variant="tonal" class="mb-3">
+      先に<router-link to="/presets">プリセットを登録</router-link>してください。
+    </v-alert>
+    <div v-if="allocationMode === 'new'" class="mb-3 text-body-2">
+      <router-link to="/plan">作成計画</router-link>の残り {{ pendingPlanCount }}体 ／ 保存できる空き {{ freePositions }}枠
+      <p v-if="!pendingPlanCount">追加で作成する計画がありません。</p>
+    </div>
+    <v-select v-if="allocationMode === 'selected'" v-model="selectedCommanderIds" :disabled="running || committing"
+      :items="commanderChoices" :label="'再最適化する' + roleLabel + '（複数選択）'" multiple chips closable-chips />
+    <p v-if="reoptimizing" class="text-body-2 mb-3">
+      対象 {{ targetCommanders.length }}体。ロック中は対象外です。全員が目標を達成したときに一括更新できます。
+    </p>
+    <v-alert v-if="reoptimizing && !eligibleCommanders.length" type="warning" variant="tonal" class="mb-3">
+      再最適化できる構成がありません。<router-link to="/commanders">保存済みの構成</router-link>でロックやプリセットを確認してください。
+    </v-alert>
+    <template v-if="!reoptimizing || targetCommanders.length">
+      <p class="text-body-2 mb-2">使用可能な装備（4部位に各1件以上必要）</p>
+      <EquipmentAvailability :slots="availableSlots" />
+    </template>
+    <v-alert v-if="!reoptimizing && !freePositions" type="warning" variant="tonal" class="mt-3">
+      管理枠が埋まっています。既存の構成を使う場合は再最適化を選んでください。
+    </v-alert>
+    <v-alert v-if="usesCpSat && executionMode === 'local'" type="info" variant="tonal" class="mt-3">
+      このPCでPython最適化サーバーを起動してください。
+      <a href="https://github.com/takumi307/ggetool/blob/main/optimizer-service/LOCAL_WINDOWS.md" target="_blank" rel="noopener">起動手順</a>
+    </v-alert>
+    <details class="my-4">
+      <summary class="text-body-2">計算設定{{ usesCpSat ? (executionMode === 'local' ? '（このPC）' : '（クラウド）') : '' }}</summary>
+      <v-select v-if="!usesCpSat" v-model="mode" :disabled="running || saving" :items="modeOptions"
+        label="最適化方法" class="mt-2" />
+      <template v-else>
+        <v-select v-model="executionMode" :disabled="running || committing"
+          :items="cpSatEndpoint ? [{ title: 'Render（クラウド）', value: 'render' }, { title: 'このPC', value: 'local' }] : [{ title: 'このPC', value: 'local' }]"
+          label="最適化の実行先" class="mt-2" />
+        <v-select v-model="timeLimitSeconds" :disabled="running || committing"
+          :items="executionMode === 'local' ? [{ title: '1分', value: 60 }, { title: '5分', value: 300 }, { title: '10分', value: 600 }, { title: '30分', value: 1800 }] : [{ title: '30秒', value: 30 }, { title: '1分', value: 60 }, { title: '5分', value: 300 }]"
+          label="計算時間（各段階）" />
+      </template>
+    </details>
+    <div class="d-flex align-center ga-2 flex-wrap">
+      <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ usesCpSat ? (reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成') : '最適化を実行' }}</v-btn>
+      <v-btn v-if="running && usesCpSat" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
+    </div>
+  </v-card>
+  <v-progress-linear v-else-if="!message" indeterminate />
   <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">
     <h3 class="text-subtitle-1 mb-2">CP-SAT最適化結果（{{ cpSatPreview.length }}体）</h3>
@@ -333,7 +414,10 @@ async function saveCpSat() {
   </v-card>
   <template v-if="result">
     <v-card class="pa-3 mt-4">
-      <h3 class="text-subtitle-1 mb-2">結果を保存</h3>
+      <h3 class="text-subtitle-1 mb-2">結果を確認して保存</h3>
+      <v-chip v-if="result.shortfalls.length" class="mb-3" :color="result.shortfalls.some(target => target.missing > 0) ? 'warning' : 'success'">
+        目標 {{ result.shortfalls.filter(target => target.missing === 0).length }} / {{ result.shortfalls.length }}件達成
+      </v-chip>
       <v-text-field v-model="commanderName" :label="roleLabel + '名'" />
       <v-btn color="primary" :loading="saving" @click="saveResult">この構成を保存して装備を確保</v-btn>
     </v-card>

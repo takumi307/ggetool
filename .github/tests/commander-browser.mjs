@@ -198,7 +198,6 @@ try {
   await visible(card('検証-npc 1'))
   await visible(card('検証-lord 2'))
   await tab('司令官').click()
-  await link('保存済み司令官').click()
   await visible(heading('保存済み司令官'))
   await visible(card('検証-locked').getByText(/兜：locked-helmet/))
   assert.equal(await card('検証城代').count(), 0)

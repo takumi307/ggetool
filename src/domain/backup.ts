@@ -46,7 +46,7 @@ export function parseBackup(text: string, workspace: BuildWorkspace = 'commander
   const statIds = keys('stats'), eqIds = keys('equipment'), gemIds = keys('gems')
   const presetIds = keys('presets'), commanderIds = keys('commanders')
   for (const p of stores.presets as StoreSchemas['presets'][]) {
-    if (p.castellanObjective !== undefined && (workspace !== 'castellan' || !['npc', 'lord'].includes(p.castellanObjective))) throw Error('城代の最適化方針が不正です')
+    if (p.castellanObjective !== undefined && (workspace !== 'castellan' || !['general', 'npc', 'lord'].includes(p.castellanObjective))) throw Error('城代の最適化方針が不正です')
     if (!Array.isArray(p.targets) || !Array.isArray(p.priorityStats) || !Array.isArray(p.maximizeStats)) throw Error('プリセットが不正です')
     if (p.targets.some(v => !statIds.has(v.statId) || !Number.isFinite(v.minValue)) || [...p.priorityStats, ...p.maximizeStats].some(id => !statIds.has(id))) throw Error('プリセットに不正な効果参照があります')
   }

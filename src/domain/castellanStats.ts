@@ -72,8 +72,3 @@ export function mergeCastellanStats(existing: StatDefinition[]): StatDefinition[
   }
   return [...byId.values()]
 }
-
-export function castellanScoringStats(objective: 'npc' | 'lord') {
-  return CASTELLAN_STAT_SEEDS.filter(s =>
-    s.cap !== null && (s.category === 'equipment' || s.id.startsWith(objective === 'npc' ? 'CNG' : 'CPG')))
-}

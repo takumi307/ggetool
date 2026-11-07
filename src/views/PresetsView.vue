@@ -8,8 +8,13 @@ const db = useDb()
 const app = useAppStore()
 const { workspace, roleLabel } = app
 const presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([]), equipment = ref<Equipment[]>([]), editing = ref<BuildPreset | null>(null), error = ref('')
+const castellanObjectives = [
+  { title: '通常防衛', value: 'general' },
+  { title: 'NPC防衛・最大化', value: 'npc' },
+  { title: '対城主防衛・バランス', value: 'lord' },
+]
 const defaults: { name: string; targets: readonly (readonly [string, number])[]; defaultCount: number; description: string; castellanObjective?: BuildPreset['castellanObjective'] }[] = workspace === 'castellan' ? [
-  { name: 'NPC防衛・最大化', targets: [], defaultCount: 1, castellanObjective: 'npc', description: '通常防衛とNPC専用効果を、各上限に対する達成率の合計で最大化します。' },
+  { name: 'NPC防衛・最大化', targets: [], defaultCount: 1, castellanObjective: 'npc', description: '城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視し、略奪で失われる資源は加点しません。' },
   { name: '対城主防衛・バランス', targets: [], defaultCount: 1, castellanObjective: 'lord', description: 'NPC向けの割当後、通常防衛と対城主効果を残りの装備で均等に高めます。作成計画で必要数を指定できます。' },
   { name: '防御バランス（例）', targets: [['C001', 100], ['C002', 100], ['C003', 50]], defaultCount: 1, description: '編集できる目標の例です。ゲームの上限値ではありません。' }
 ] : [
@@ -24,6 +29,7 @@ function fresh(): BuildPreset {
 }
 function start(p?: BuildPreset) {
   editing.value = p ? JSON.parse(JSON.stringify(p)) as BuildPreset : fresh()
+  if (workspace === 'castellan') editing.value.castellanObjective ??= 'general'
   if (workspace === 'commander' && editing.value.name.includes('援軍特化')) {
     const supportStat = stats.value.find(s => s.name.includes('中庭攻撃時に受ける') && s.name.includes('乙女の援軍'))
     if (supportStat && !editing.value.requiredEquipmentStatId) {
@@ -77,7 +83,8 @@ async function remove(p: BuildPreset) {
   <v-alert v-if="error && !editing" type="error" class="mb-3">{{ error }}</v-alert>
   <v-card v-for="p in presets" :key="p.id" class="pa-3 mb-2">
     <strong>{{ p.name }}</strong><span v-if="p.requiredEquipmentStatId" class="text-caption ml-2">必須装備効果：{{ stats.find(s => s.id === p.requiredEquipmentStatId)?.name ?? p.requiredEquipmentStatId }}</span><span v-if="p.requiredEquipmentKeyword" class="text-caption ml-2">必須装備：{{ p.requiredEquipmentKeyword }}</span>
-    <p class="text-body-2">{{ p.targets.map(t => (stats.find(s => s.id === t.statId)?.name ?? t.statId) + ' ≥ ' + t.minValue).join(' / ') || (p.castellanObjective === 'npc' ? '通常＋NPCの効果を最大化' : p.castellanObjective === 'lord' ? '通常＋対城主の効果をバランス配分' : '目標なし') }}</p>
+    <p class="text-body-2">{{ p.targets.map(t => (stats.find(s => s.id === t.statId)?.name ?? t.statId) + ' ≥ ' + t.minValue).join(' / ') || '最低目標なし' }}</p>
+    <p v-if="workspace === 'castellan'" class="text-caption">{{ castellanObjectives.find(option => option.value === (p.castellanObjective ?? 'general'))?.title }} ／ 目標外の防衛効果も評価</p>
     <v-btn size="small" variant="text" @click="start(p)">編集</v-btn>
     <v-btn size="small" variant="text" color="error" @click="remove(p)">削除</v-btn>
   </v-card>
@@ -86,12 +93,15 @@ async function remove(p: BuildPreset) {
       <h3 class="text-h6 mb-3">プリセット編集</h3>
       <v-text-field v-model="editing.name" label="名前" />
       <v-text-field v-model.number="editing.defaultCount" type="number" min="1" label="標準作成数" />
+      <v-select v-if="workspace === 'castellan'" v-model="editing.castellanObjective" :items="castellanObjectives" label="防衛方針" />
       <v-textarea v-model="editing.description" rows="2" label="説明" />
       <v-select v-model="editing.requiredEquipmentStatId" :items="stats.filter(s => s.category === 'equipment').map(s => ({ title: s.name, value: s.id }))" label="必須装備効果（効果を持つ武具を最低1つ使用）" clearable :hint="workspace === 'commander' ? '援軍特化型は「中庭攻撃時に受けるレベル10乙女の援軍」を選択。装備名ではなく効果で判定します。' : '選択した効果が付く武具を各城代に最低1個使います。'" persistent-hint class="mb-3" />
       <v-alert v-if="editing.requiredEquipmentStatId" type="info" variant="tonal" class="mb-3">該当効果を持つ登録装備：{{ equipment.filter(e => e.effects.some(x => x.statId === editing!.requiredEquipmentStatId && x.value > 0)).length }}件</v-alert>
       <v-text-field v-if="!editing.requiredEquipmentStatId" v-model="editing.requiredEquipmentKeyword" label="必須装備名（部分一致・空欄なら指定なし）" :hint="'各' + roleLabel + 'に、この文字を名前に含む装備を最低1個必須にします。装備の重複使用はできません。'" persistent-hint class="mb-3" />
       <v-alert v-if="editing.requiredEquipmentKeyword" type="info" variant="tonal" class="mb-3">一致する登録装備：{{ equipment.filter(e => e.name.includes(editing!.requiredEquipmentKeyword!.trim())).length }}件。6体作る場合は最低6個の未使用装備が必要です。</v-alert>
       <h4 class="mb-2">最低目標</h4>
+      <p v-if="workspace === 'castellan'" class="text-body-2 mb-2">最低目標を優先し、目標に含まれない効果は防衛方針に合わせてできるだけ高めます。</p>
+      <p v-if="editing.castellanObjective === 'npc'" class="text-body-2 mb-2">城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視します。略奪で失われる資源は加点しません。</p>
       <v-row v-for="(t, i) in editing.targets" :key="i" dense>
         <v-col cols="7"><v-select v-model="t.statId" :items="stats.filter(s => workspace === 'commander' || canonicalStatId(s.id) === s.id).map(s => ({ title: s.name, value: s.id }))" label="効果" /></v-col>
         <v-col cols="4"><v-text-field v-model.number="t.minValue" type="number" label="目標値" /></v-col>

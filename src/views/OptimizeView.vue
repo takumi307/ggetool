@@ -163,7 +163,8 @@ async function run() {
     ])
     equipmentAllocations.value = usedEq
     result.value = await runOptimizeSingle({
-      equipment: equipment.value, gems: gems.value, stats: stats.value, preset: preset.value,
+      equipment: equipment.value, gems: gems.value, stats: stats.value,
+      preset: workspace === 'castellan' ? { ...preset.value, castellanObjective: preset.value.castellanObjective ?? 'general' } : preset.value,
       reservedEquipmentIds: usedEq.map(a => a.equipmentId), reservedGemIds: usedGem.map(a => a.gemId),
       mode: mode.value
     }, search.signal)
@@ -331,9 +332,12 @@ async function saveCpSat() {
       <v-chip v-for="target in preset.targets" :key="target.statId" size="small">
         {{ effectText(target.statId, target.minValue) }}以上
       </v-chip>
-      <span v-if="preset.castellanObjective" class="text-body-2">{{ preset.castellanObjective === 'npc' ? '通常＋NPC効果を最大化' : '通常＋対城主効果をバランス配分' }}</span>
-      <span v-else-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
+      <span v-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
     </div>
+    <p v-if="!usesCpSat && preset && workspace === 'castellan'" class="text-body-2 mb-3">
+      最低目標を優先し、目標外の防衛効果を高めます。
+      <template v-if="preset.castellanObjective === 'npc'">城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視し、略奪で失われる資源は加点しません。</template>
+    </p>
     <v-alert v-if="!usesCpSat && !presets.length" type="warning" variant="tonal" class="mb-3">
       先に<router-link to="/presets">プリセットを登録</router-link>してください。
     </v-alert>

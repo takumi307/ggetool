@@ -1,6 +1,5 @@
 import { canonicalStatId } from './statAliases'
-import { castellanScoringStats } from './castellanStats'
-import { addEffects, castellanQuality, knownCaps, requiredEquipmentMatcher, targetActual } from './effects'
+import { addEffects, castellanQuality, castellanScoringScales, castellanScoringStats, knownCaps, requiredEquipmentMatcher, targetActual } from './effects'
 import { SLOT_TYPES, type BuildPreset, type Equipment, type Gem, type SlotType, type StatDefinition } from './types'
 
 export interface OptimizationResult {
@@ -39,15 +38,17 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   // Fast mode uses a heuristic shortlist. It never claims exact optimality.
   const npcGem = input.preset.name.includes('援軍特化')
   const objective = input.preset.castellanObjective
-  const scoringStats = objective ? castellanScoringStats(objective) : []
-  const scoringCaps = new Map(scoringStats.map(stat => [stat.id, caps.get(stat.id) || stat.cap || 1]))
+  const scoringStats = objective ? castellanScoringStats(input.preset, castellanScoringScales(input.stats, [...input.equipment, ...input.gems])) : []
+  const scoringById = new Map(scoringStats.map(stat => [stat.id, stat]))
+  const targetLimits = new Map(input.preset.targets.map(target => [canonicalStatId(target.statId), target.minValue]))
   const priorities = [...new Set(input.preset.targets.map(t => canonicalStatId(t.statId)))]
   const rank = (effects: { statId: string; value: number }[]) => effects.reduce((sum, e) => {
     const id = canonicalStatId(e.statId)
     const i = priorities.indexOf(npcGem && id === 'G005' ? 'S002' : id)
-    const targetWeight = i < 0 ? 0 : e.value * Math.pow(2, Math.min(12, priorities.length - i))
-    const normalization = scoringCaps.get(id)
-    return sum + targetWeight + (normalization ? Math.min(e.value / normalization, 1) : 0)
+    const targetValue = objective ? Math.min(e.value, targetLimits.get(id) ?? 0) : e.value
+    const targetWeight = i < 0 ? 0 : targetValue * Math.pow(2, Math.min(12, priorities.length - i))
+    const scoring = scoringById.get(id)
+    return sum + targetWeight + (scoring ? scoring.weight * Math.min(e.value / scoring.scale, 1) : 0)
   }, 0)
   const slots = mode === 'fast' ? availableSlots.map(group => {
     const sorted = [...group].sort((a, b) => rank(b.effects) - rank(a.effects))
@@ -66,7 +67,7 @@ export function optimizeSingle(input: OptimizeInput): OptimizationResult | null 
   const score = (equipmentTotals: Record<string, number>, gemTotals: Record<string, number>) => {
     const misses = input.preset.targets.map(t => Math.max(0, t.minValue - targetActual(input.preset, t.statId, equipmentTotals, gemTotals, caps)))
     const totalMiss = misses.reduce((a, b) => a + b, 0)
-    // Evaluate only whether minimum targets are met and how far short they are.
+    // Minimum targets take precedence over castellan quality.
     const quality = objective ? castellanQuality(objective, equipmentTotals, gemTotals, caps, scoringStats) : 0
     return [misses.every(m => m === 0) ? 1 : 0, -totalMiss, quality]
   }

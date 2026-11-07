@@ -14,7 +14,8 @@ const preset: BuildPreset = {
 describe('optimizer modes', () => {
   it('precise exhausts small candidate sets', () => {
     const result = optimizeSingle({ equipment, gems: [], stats: [], preset, mode: 'precise' })
-    expect(result?.totals.S001).toBe(80)
+    expect(result?.shortfalls).toEqual([{ statId: 'S001', required: 70, actual: 70, missing: 0 }])
+    expect(result?.evaluated).toBe(16)
     expect(result?.approximate).toBe(false)
   })
   it('fast never claims exact optimality', () => {

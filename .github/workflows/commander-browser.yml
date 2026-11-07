@@ -24,7 +24,7 @@ jobs:
           cache: pip
           cache-dependency-path: optimizer-service/requirements.txt
       - run: bun install
-      - run: bun run test src/tests/repository.test.ts src/tests/commanderService.test.ts
+      - run: bun run test
       - run: bun run build
         env:
           VITE_OPTIMIZER_API_URL: http://127.0.0.1:8765

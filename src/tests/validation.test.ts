@@ -9,9 +9,11 @@ describe('Phase 2 validation', () => {
     expect(validateEquipment({ ...base, slotType: 'helmet', effects }, STAT_SEEDS)).toBeNull()
     expect(validateEquipment({ ...base, slotType: 'helmet', effects: effects.slice(0, 2) }, STAT_SEEDS)).not.toBeNull()
   })
-  it('効果の重複登録を拒否', () => {
-    const effects = ['S001','S001','S003'].map(statId => ({ statId, value: 12 }))
-    expect(validateEquipment({ ...base, slotType: 'helmet', effects }, STAT_SEEDS)).not.toBeNull()
+  it('同じ効果が複数付いた装備・ジェムを許可', () => {
+    const equipmentEffects = ['S001', 'S001', 'S003'].map(statId => ({ statId, value: 12 }))
+    const gemEffects = [5, 8].map(value => ({ statId: 'G001', value }))
+    expect(validateEquipment({ ...base, slotType: 'helmet', effects: equipmentEffects }, STAT_SEEDS)).toBeNull()
+    expect(validateGem({ ...base, allowedSlots: ['helmet'], effects: gemEffects }, STAT_SEEDS)).toBeNull()
   })
   it('ジェムの装着可能部位が必要', () => {
     expect(validateGem({ ...base, allowedSlots: [], effects: [{ statId: 'G001', value: 1 }] }, STAT_SEEDS)).not.toBeNull()

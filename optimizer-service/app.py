@@ -357,7 +357,7 @@ def start_job(data: Request):
         job_id = uuid.uuid4().hex
         _jobs[job_id] = {"state": "running", "updated": time.monotonic()}
     _executor.submit(_run_job, job_id, data)
-    return {"jobId": job_id, "state": "running"}
+    return {"jobId": job_id, "state": "running", "castellan": data.castellan}
 
 @app.get("/jobs/{job_id}")
 def job_status(job_id: str):

@@ -2,7 +2,12 @@
   "name": "ggetool",
   "compatibility_date": "2026-11-07",
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/optimizer/*"
+    ]
   },
-  "previews": {}
+  "previews": {},
+  "main": "./worker.mjs"
 }

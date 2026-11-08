@@ -16,6 +16,8 @@ const workspaceError = ref('')
 
 const bottomItems = NAV_ITEMS.filter((i) => i.bottom)
 const moreItems = NAV_ITEMS.filter((i) => !i.bottom)
+const viewKey = computed(() => route.name === 'equipment-edit' || route.name === 'gem-edit'
+  ? app.workspace + ':' + route.fullPath : app.workspace)
 const activeBottom = computed(() => bottomItems.find((i) => route.path === i.path || (i.path !== '/' && route.path.startsWith(i.path)))?.name ?? 'more')
 
 const navTitle = (title: string) => title.replace('司令官', app.roleLabel)
@@ -78,7 +80,7 @@ onMounted(() => { void openWorkspace(savedWorkspace()) })
         <v-alert v-if="app.ready && !app.persistent" type="warning" class="mb-4" variant="tonal">
           IndexedDBを利用できないため、データは保存されません（ページを閉じると消えます）。{{ app.error }}
         </v-alert>
-        <router-view v-if="app.ready" :key="app.workspace" />
+        <router-view v-if="app.ready" :key="viewKey" />
         <v-progress-linear v-else-if="changingWorkspace" indeterminate />
       </v-container>
     </v-main>

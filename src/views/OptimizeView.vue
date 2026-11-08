@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch, onBeforeUnmount } from 'vue'
+import { onMounted, ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import OptimizationSummary from '@/components/OptimizationSummary.vue'
 import BuildStatsPreview from '@/components/BuildStatsPreview.vue'
 import { STAGE_LABELS, inspectTargets, requiredEquipmentIssues, objectiveOrderIssue, objectiveDescription, maximumStages, jobPresets } from '@/domain/optimizationInsight'
 import EquipmentAvailability from '@/components/EquipmentAvailability.vue'
 import { equipmentAvailability } from '@/domain/equipmentAvailability'
-import { buildBreakdown, effectiveTotals, effectiveValue, knownCaps } from '@/domain/effects'
-import { canonicalStatId } from '@/domain/statAliases'
 import { useRoute } from 'vue-router'
 import type { StoreSnapshot } from '@/repositories/types'
 import { useDb, useAppStore } from '@/stores/app'
@@ -24,14 +22,12 @@ const plans = ref<BuildPlan[]>([])
 const progress = ref('')
 const searchProgress = ref<CpSatProgress | null>(null)
 const outcome = ref<CpSatOutcome | null>(null)
+const resultHeading = ref<HTMLElement | null>(null)
 const batchResults = ref<{ name: string; preset: string; result: OptimizationResult }[]>([])
 const cpSatPreview = ref<CpSatBuild[]>([])
 let previewInputs: StoreSnapshot = {}
-const cpSatStatus = ref('')
 const zeroDiagnostics = ref<{ preset: string; stat: string; required: number; optimistic: number; impossible: boolean }[]>([])
 const missingSlots = ref<string[]>([])
-const cpSatOptimal = ref(false)
-const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
 const executionMode = ref<'render' | 'local'>(cpSatEndpoint ? 'render' : 'local')
 const executionOptions = [
@@ -118,10 +114,6 @@ const eqName = (id?: string) => equipment.value.find(e => e.id === id)?.name ?? 
 const gemName = (id?: string) => gems.value.find(g => g.id === id)?.name ?? 'なし'
 const effectText = (id: string, value: number) => `${statName(id)}：${value}${stats.value.find(s => s.id === id)?.unit ?? '%'}`
 const itemEffects = (slot: SlotType, r: OptimizationResult) => equipment.value.find(e => e.id === r.equipmentIds[slot])?.effects ?? []
-const shownTotals = (r: OptimizationResult) => {
-  const parts = buildBreakdown(r, equipment.value, gems.value)
-  return effectiveTotals(parts.equipment, parts.gem, knownCaps(stats.value))
-}
 const gemEffects = (slot: SlotType, r: OptimizationResult) => gems.value.find(g => g.id === r.gemAssignments.find(a => a.slotType === slot)?.gemId)?.effects ?? []
 
 function createJobs(): CpSatJob[] {
@@ -219,7 +211,7 @@ async function run() {
   if (!canRun.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
   outcome.value = null; searchProgress.value = null;
-  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null; zeroDiagnostics.value = []; missingSlots.value = []
+  batchResults.value = []; cpSatPreview.value = []; zeroDiagnostics.value = []; missingSlots.value = []
   controller.value = new AbortController()
   try {
     const [commanders, usedEq, usedGem, currentEquipment, currentGems, currentStats, currentPresets] = await Promise.all([
@@ -278,20 +270,22 @@ async function run() {
     }
     previewInputs = { equipment: currentEquipment, gems: currentGems, stats: currentStats, presets: currentPresets }
     cpSatPreview.value = response.builds
-    cpSatStatus.value = response.status
-    cpSatOptimal.value = response.optimal
-    cpSatUpperBound.value = response.upperBound ?? null
     if (!response.achieved) message.value = response.optimal ? '条件を満たす構成がありません。下の診断を確認してください。' : '制限時間内に構成が見つかりませんでした。時間を長くして再実行できます。'
   } catch (e) {
     message.value = e instanceof Error && e.name === 'AbortError'
       ? '画面での待機を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
       : String(e)
-  } finally { running.value = false; progress.value = ''; controller.value = null }
+  } finally {
+    running.value = false; progress.value = ''; controller.value = null
+    await nextTick()
+    if (outcome.value) resultHeading.value?.focus()
+  }
 }
 async function saveCpSat() {
   if (running.value || committing.value || !canSaveCpSat.value) return
   committing.value = true; message.value = ''; saved.value = ''
   let count = 0
+  let didSave = false
   try {
     if (allocationMode.value !== 'new') {
       await replaceCommanderAssignments(db, cpSatPreview.value.map(entry => ({
@@ -302,6 +296,7 @@ async function saveCpSat() {
         expectedEquipmentIds: existingCommanders.value.find(c => c.id === entry.job.commanderId)!.equipmentIds,
         expectedGemAssignments: existingCommanders.value.find(c => c.id === entry.job.commanderId)!.gemAssignments
       })), previewInputs)
+      didSave = true
       saved.value = `${cpSatPreview.value.length}体を一括更新しました（変更した装備・ジェムの割当：${movedItems.value}箇所）`
       cpSatPreview.value = []
       await refreshAvailability()
@@ -312,6 +307,7 @@ async function saveCpSat() {
       name: `${entry.job.preset.name} ${entry.job.ordinal}`, presetId: entry.job.preset.id, result: entry.result,
     }))
     await saveCommanders(db, entries, previewInputs)
+    didSave = true
     batchResults.value = cpSatPreview.value.map((entry, index) => ({
       name: entries[index].name, preset: entry.job.preset.name, result: entry.result,
     }))
@@ -322,7 +318,8 @@ async function saveCpSat() {
     await app.refreshCounts(db)
   } catch (e) {
     cpSatPreview.value = []
-    message.value = `保存できませんでした。今回の変更は保存されていません：${String(e)}。再最適化してください。`
+    message.value = didSave ? `保存は完了しましたが、表示の更新に失敗しました：${String(e)}。保存済みの構成を確認してください。`
+      : `保存できませんでした。今回の変更は保存されていません：${String(e)}。再最適化してください。`
     await app.refreshCounts(db)
   } finally { committing.value = false }
 }
@@ -426,7 +423,7 @@ async function saveCpSat() {
     <v-progress-linear indeterminate color="primary" class="mt-3" />
   </v-card>
   <v-card v-if="outcome && !running" class="pa-4 mt-3">
-    <h3 class="text-subtitle-1 font-weight-bold mb-3">3. 探索結果を確認</h3>
+    <h3 ref="resultHeading" tabindex="-1" class="text-subtitle-1 font-weight-bold mb-3">3. 探索結果を確認</h3>
     <OptimizationSummary :outcome="outcome" />
   </v-card>
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">

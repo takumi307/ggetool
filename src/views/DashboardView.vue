@@ -10,6 +10,7 @@ const slots = ref<ReturnType<typeof equipmentAvailability>>([])
 const error = ref('')
 const canBuild = computed(() => slots.value.length > 0 && slots.value.every(slot => slot.available > 0))
 const nextStep = computed(() => {
+  if (app.counts.commanders && !canBuild.value) return { to: '/optimize?mode=all', label: '保存済みの構成を再最適化' }
   if (!canBuild.value) return { to: '/equipment', label: '装備管理へ' }
   if (!app.counts.presets) return { to: '/presets', label: '目標を設定' }
   return { to: '/optimize?mode=single', label: '1体を最適化' }

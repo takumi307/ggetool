@@ -10,7 +10,7 @@ import time
 import uuid
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,7 +41,7 @@ class Gem(BaseModel):
 class Stat(BaseModel):
     id: str
     capStatus: str
-    cap: float | None = None
+    cap: float | None = Field(default=None, ge=0, le=100000)
 class Target(BaseModel):
     statId: str
     npcBonusStatId: str | None = None
@@ -88,6 +88,15 @@ class Request(BaseModel):
             raise ValueError("Duplicate gem IDs")
         if len({s.id for s in self.stats}) != len(self.stats):
             raise ValueError("Duplicate stat IDs")
+        if len({(j.presetId, j.ordinal) for j in self.jobs}) != len(self.jobs):
+            raise ValueError("Duplicate jobs")
+        if any(len(set(g.allowedSlots)) != len(g.allowedSlots) for g in self.gems):
+            raise ValueError("Duplicate gem slots")
+        # Reject unsupported precision as a validation error, before starting a job.
+        for value in ([e.value for item in [*self.equipment, *self.gems] for e in item.effects] +
+                      [t.minValue for j in self.jobs for t in j.targets] +
+                      [s.cap for s in self.stats if s.cap is not None]):
+            scaled(value)
         return self
 
 app = FastAPI(title="E4K CP-SAT Optimizer", version="1.0")
@@ -99,8 +108,13 @@ def health():
 
 @app.post("/optimize")
 def optimize(data: Request):
+    return solve_request(data)
+
+
+def solve_request(data: Request, report=None):
+    started_at = time.monotonic()
     if not data.jobs:
-        return {"status": "OPTIMAL", "optimal": True, "achieved": 0, "upperBound": 0, "requested": 0, "builds": []}
+        return {"status": "OPTIMAL", "optimal": True, "achieved": 0, "upperBound": 0, "requested": 0, "builds": [], "countOptimal": True, "stages": [], "elapsedSeconds": 0}
     reserved_e = set(data.reservedEquipmentIds)
     reserved_g = set(data.reservedGemIds)
     eq = [e for e in data.equipment if e.id not in reserved_e]
@@ -195,7 +209,7 @@ def optimize(data: Request):
             raw_equipment = sum(equipment_stat_terms[key])
             raw_gems = sum(gem_stat_terms[key])
             cap = caps.get(stat)
-            if data.castellan and stat == "C003":
+            if stat in ("S003", "C003"):
                 value = capped(raw_equipment + raw_gems, cap, f"courtyard_{j}")
             else:
                 gem_cap = None
@@ -221,22 +235,6 @@ def optimize(data: Request):
     count = sum(active)
     if data.maxAchieved is not None:
         model.Add(count <= data.maxAchieved)
-
-    def solve(objective):
-        model.Maximize(objective)
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = data.timeLimitSeconds
-        solver.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
-        return solver, solver.Solve(model)
-
-    solver, status = solve(count)
-    bound = min(n, max(0, math.floor(solver.BestObjectiveBound() + 1e-6)))
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return {"status": solver.StatusName(status), "optimal": False, "achieved": 0, "upperBound": bound if status != cp_model.MODEL_INVALID else None, "requested": n, "builds": []}
-    first_count = round(solver.Value(count))
-    bound = max(first_count, bound)
-    best_solver = solver
-    final_status = status
 
     def stability_terms():
         retained = []
@@ -300,37 +298,93 @@ def optimize(data: Request):
                 terms.append(points if job.overshoot == "reward" else -points)
         return terms
 
-    if status == cp_model.OPTIMAL and first_count:
-        model.Add(count == first_count)
-        max_priority = max(job.priority for job in data.jobs)
-        priority = sum((max_priority + 1 - job.priority) * active[j] for j, job in enumerate(data.jobs))
-        if data.objectiveOrder is None and not data.castellan:
-            # Keep the existing commander tie-break and its two-stage time budget.
-            legacy, stage_status = solve((8 * n + 1) * priority + sum(stability_terms()))
-            if stage_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                best_solver = legacy
-            final_status = cp_model.OPTIMAL if stage_status == cp_model.OPTIMAL else cp_model.FEASIBLE
-        else:
-            stages = {
-                "planPriority": lambda: [priority],
-                "weighted": weighted_terms,
-                "overshoot": overshoot_terms,
-                "stability": stability_terms,
-            }
-            order = data.objectiveOrder or ["planPriority", "weighted"]
-            for stage in order:
-                terms = stages[stage]()
-                if not terms:
-                    continue
-                objective = sum(terms)
-                candidate, stage_status = solve(objective)
-                if stage_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                    best_solver = candidate
-                if stage_status != cp_model.OPTIMAL:
-                    final_status = cp_model.FEASIBLE
-                    if data.objectiveOrder is not None or stage_status != cp_model.FEASIBLE:
-                        break
-                model.Add(objective == candidate.Value(objective))
+    max_priority = max(job.priority for job in data.jobs)
+    priority = sum((max_priority + 1 - job.priority) * active[j] for j, job in enumerate(data.jobs))
+    # Build all auxiliary variables before the first solve. Every incumbent can
+    # then be evaluated for every later objective, including after a timeout.
+    if data.objectiveOrder is None and not data.castellan:
+        phases = [("priorityAndStability", (8 * n + 1) * priority + sum(stability_terms()))]
+    else:
+        terms = {
+            "planPriority": [priority], "weighted": weighted_terms(),
+            "overshoot": overshoot_terms(), "stability": stability_terms(),
+        }
+        phases = [(stage, sum(terms[stage])) for stage in
+                  (data.objectiveOrder or ["planPriority", "weighted"]) if terms[stage]]
+    phases.insert(0, ("count", count))
+    static_bound = min(n, data.maxAchieved if data.maxAchieved is not None else n,
+                       *(len(equipment_by_slot[slot]) for slot in SLOTS))
+    stage_results = []
+    best_solver = None
+    achieved = 0
+    bound = static_bound
+    count_optimal = False
+    all_proven = True
+    decision_vars = [*active, *x.values(), *y.values()]
+
+    # Existing assignments are useful starting suggestions, never locks.
+    for j, job in enumerate(data.jobs):
+        if all((j, slot, job.previousEquipmentIds.get(slot)) in x for slot in SLOTS):
+            model.AddHint(active[j], 1)
+            for slot in SLOTS:
+                model.AddHint(x[j, slot, job.previousEquipmentIds[slot]], 1)
+            for slot, gid in job.previousGemIds.items():
+                if (j, slot, gid) in y:
+                    model.AddHint(y[j, slot, gid], 1)
+
+    def publish(stage, index):
+        if report:
+            report({"stage": stage, "stageIndex": index + 1, "stageCount": len(phases),
+                    "achieved": achieved, "upperBound": bound, "countOptimal": count_optimal,
+                    "elapsedSeconds": round(time.monotonic() - started_at, 1)})
+
+    class IncumbentProgress(cp_model.CpSolverSolutionCallback):
+        def on_solution_callback(self):
+            nonlocal achieved, bound
+            if phase_id == "count":
+                achieved = round(self.Value(count))
+                bound = max(achieved, min(static_bound, math.floor(self.BestObjectiveBound() + 1e-6)))
+            publish(phase_id, phase_index)
+
+    for phase_index, (phase_id, objective) in enumerate(phases):
+        if best_solver is not None:
+            # A timeout in a later phase must never replace a better incumbent.
+            model.Add(objective >= best_solver.Value(objective))
+            model.ClearHints()
+            for var in decision_vars:
+                model.AddHint(var, best_solver.Value(var))
+        model.Maximize(objective)
+        publish(phase_id, phase_index)
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = data.timeLimitSeconds
+        solver.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
+        status = solver.Solve(model, IncumbentProgress())
+        has_solution = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+        if phase_id == "count":
+            if has_solution:
+                achieved = round(solver.Value(count))
+                bound = max(achieved, min(static_bound, math.floor(solver.BestObjectiveBound() + 1e-6)))
+                count_optimal = status == cp_model.OPTIMAL or achieved == bound
+            else:
+                # UNKNOWN's solver bound may be uninitialized; use a safe inventory bound.
+                return {"status": solver.StatusName(status), "optimal": False,
+                        "countOptimal": False, "achieved": 0, "upperBound": static_bound,
+                        "requested": n, "builds": [], "stages": [],
+                        "elapsedSeconds": round(time.monotonic() - started_at, 1)}
+        if has_solution:
+            best_solver = solver
+        proven = status == cp_model.OPTIMAL
+        all_proven = all_proven and proven
+        stage_results.append({"id": phase_id, "status": solver.StatusName(status),
+                              "value": best_solver.Value(objective),
+                              "bound": solver.BestObjectiveBound() if has_solution else None})
+        # Preserve the best value found, even if it is not yet proven optimal.
+        # Later phases improve quality at that value instead of stopping early.
+        model.Add(objective == best_solver.Value(objective))
+        publish(phase_id, phase_index)
+        if phase_id == "count" and achieved == 0:
+            break
+    final_status = "OPTIMAL" if all_proven else "FEASIBLE"
     builds = []
     for j, job in enumerate(data.jobs):
         if not best_solver.Value(active[j]):
@@ -358,9 +412,10 @@ def optimize(data: Request):
             "overflow": [{"statId": key, "cap": cap / SCALE, "raw": totals[key] / SCALE}
                          for key, cap in caps.items() if totals.get(key, 0) > cap]
         })
-    return {"status": solver.StatusName(final_status),
+    return {"status": final_status,
             "upperBound": bound,
-            "optimal": status == cp_model.OPTIMAL and final_status == cp_model.OPTIMAL,
+            "optimal": all_proven, "countOptimal": count_optimal,
+            "stages": stage_results, "elapsedSeconds": round(time.monotonic() - started_at, 1),
             "achieved": len(builds), "requested": n, "builds": builds}
 
 # Asynchronous jobs avoid holding a browser/proxy HTTP connection open during
@@ -380,7 +435,10 @@ def _expire_jobs():
 
 def _run_job(job_id: str, data: Request):
     try:
-        result = optimize(data)
+        def report(progress):
+            with _job_lock:
+                _jobs[job_id]["progress"] = progress
+        result = solve_request(data, report)
         with _job_lock:
             _jobs[job_id].update(state="completed", result=result, updated=time.monotonic())
     except Exception as exc:
@@ -416,6 +474,8 @@ def job_status(job_id: str):
         if not job:
             raise HTTPException(status_code=404, detail="計算ジョブが見つかりません。サーバー再起動の可能性があります。")
         response = {"jobId": job_id, "state": job["state"]}
+        if "progress" in job:
+            response["progress"] = job["progress"]
         if "result" in job:
             response["result"] = job["result"]
         if "error" in job:

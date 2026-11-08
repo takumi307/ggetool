@@ -140,7 +140,7 @@ function showCommanderList() { router.push('/commanders') }
         <p v-if="!numericStats.length" class="text-body-2">保存済みステータスがありません。</p>
         <div v-for="s in numericStats" :key="s.id" class="py-2">
           <div class="d-flex justify-space-between ga-2"><span>{{ statName(s.id) }}</span><strong>{{ round(s.effective) }}{{ s.unit }}</strong></div>
-          <p v-if="selectedLines.recalculated" class="text-caption">装備 {{ round(s.equipment) }}{{ s.unit }}<template v-if="s.cap !== null">（上限 {{ s.cap }}{{ s.unit }}{{ s.id === 'C003' ? '・武具とジェムの合計' : s.id.startsWith('CNG') || s.id.startsWith('CPG') ? '・ジェム' : '' }}<span v-if="s.equipment > s.cap && s.id !== 'C003'">、超過 {{ round(s.equipment - s.cap) }}{{ s.unit }}</span>）</template> ＋ ジェム {{ round(s.gem) }}{{ s.unit }}</p>
+          <p v-if="selectedLines.recalculated" class="text-caption">装備 {{ round(s.equipment) }}{{ s.unit }}<template v-if="s.cap !== null">（上限 {{ s.cap }}{{ s.unit }}{{ (s.id === 'S003' || s.id === 'C003') ? '・武具とジェムの合計' : s.id.startsWith('CNG') || s.id.startsWith('CPG') ? '・ジェム' : '' }}<span v-if="s.equipment > s.cap && s.id !== 'S003' && s.id !== 'C003'">、超過 {{ round(s.equipment - s.cap) }}{{ s.unit }}</span>）</template> ＋ ジェム {{ round(s.gem) }}{{ s.unit }}</p>
           <v-divider class="mt-2" />
         </div>
       </v-card>

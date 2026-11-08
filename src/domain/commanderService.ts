@@ -4,40 +4,55 @@ import type { OptimizationResult } from './optimizer'
 
 export const MAX_COMMANDERS = 35
 
-/** Persist build and allocations together; IndexedDB replaceAll uses one transaction. */
-export async function saveCommander(db: Database, name: string, presetId: string, result: OptimizationResult): Promise<CommanderBuild> {
-  if (!name.trim()) throw Error('司令官名を入力してください')
-  if (!await db.repo('presets').get(presetId)) throw Error('プリセットが見つかりません')
-  const [equipment, gems, commanders, eqAlloc, gemAlloc] = await Promise.all([
+export interface NewCommander { name: string; presetId: string; result: OptimizationResult }
+type OptimizationInputs = Pick<StoreSnapshot, 'equipment' | 'gems' | 'stats' | 'presets'>
+
+/** Save every new build and allocation in one transaction, or save none. */
+export async function saveCommanders(db: Database, entries: NewCommander[], inputs?: OptimizationInputs): Promise<CommanderBuild[]> {
+  if (!entries.length) throw Error('保存する構成がありません')
+  const [equipment, gems, commanders, eqAlloc, gemAlloc, presets] = await Promise.all([
     db.repo('equipment').getAll(), db.repo('gems').getAll(), db.repo('commanders').getAll(),
-    db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll()
+    db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll(), db.repo('presets').getAll()
   ])
-  const chosen = SLOT_TYPES.map(slot => ({ slot, id: result.equipmentIds[slot] }))
-  if (chosen.some(v => !v.id)) throw Error('4部位すべての装備が必要です')
-  const eqIds = chosen.map(v => v.id as string)
-  const gemIds = result.gemAssignments.map(v => v.gemId)
-  if (new Set(eqIds).size !== 4 || new Set(gemIds).size !== gemIds.length) throw Error('装備・ジェムの重複使用はできません')
-  if (eqIds.some(id => eqAlloc.some(a => a.equipmentId === id)) || gemIds.some(id => gemAlloc.some(a => a.gemId === id))) throw Error('他の司令官が使用中の装備・ジェムがあります。再最適化してください')
-  for (const { slot, id } of chosen) if (!equipment.some((e: Equipment) => e.id === id && e.slotType === slot)) throw Error('装備が変更または削除されています')
-  for (const a of result.gemAssignments) {
-    if (!SLOT_TYPES.includes(a.slotType) || !gems.some((g: Gem) => g.id === a.gemId && g.allowedSlots.includes(a.slotType))) throw Error('ジェムが変更または削除されています')
-  }
-  if (new Set(result.gemAssignments.map(a => a.slotType)).size !== result.gemAssignments.length) throw Error('同じ部位に複数のジェムは装着できません')
+  const newBuilds: CommanderBuild[] = [], newEq = [...eqAlloc], newGem = [...gemAlloc]
+  const usedEq = new Set(eqAlloc.map(a => a.equipmentId)), usedGem = new Set(gemAlloc.map(a => a.gemId))
   const usedPositions = new Set(commanders.map(c => commanderNumber(c, commanders)).filter((n): n is number => n !== undefined))
-  const position = Array.from({length:MAX_COMMANDERS}, (_,i)=>i+1).find(n=>!usedPositions.has(n))
-  if (!position) throw Error('司令官は35体までです。空き番号がありません')
-  const id = crypto.randomUUID(), now = new Date().toISOString()
-  const equipmentIds = Object.fromEntries(chosen.map(v => [v.slot, v.id])) as Partial<Record<SlotType, string>>
-  const build: CommanderBuild = {
-    id, position, name: name.trim(), presetId, equipmentIds, gemAssignments: result.gemAssignments.map(a => ({ ...a })),
-    calculatedStats: { ...result.totals, _approximate: result.approximate }, createdAt: now
+  const now = new Date().toISOString()
+  for (const { name, presetId, result } of entries) {
+    if (!name.trim()) throw Error('名前を入力してください')
+    if (!presets.some(p => p.id === presetId)) throw Error('プリセットが見つかりません')
+    const chosen = SLOT_TYPES.map(slot => ({ slot, id: result.equipmentIds[slot] }))
+    if (chosen.some(v => !v.id)) throw Error('4部位すべての装備が必要です')
+    const eqIds = chosen.map(v => v.id as string)
+    const gemIds = result.gemAssignments.map(v => v.gemId)
+    if (new Set(eqIds).size !== 4 || new Set(gemIds).size !== gemIds.length) throw Error('装備・ジェムの重複使用はできません')
+    if (eqIds.some(id => usedEq.has(id)) || gemIds.some(id => usedGem.has(id))) throw Error('使用中または今回の構成間で重複する装備・ジェムがあります。再最適化してください')
+    for (const { slot, id } of chosen) if (!equipment.some(e => e.id === id && e.slotType === slot)) throw Error('装備が変更または削除されています')
+    for (const a of result.gemAssignments) {
+      if (!SLOT_TYPES.includes(a.slotType) || !gems.some(g => g.id === a.gemId && g.allowedSlots.includes(a.slotType))) throw Error('ジェムが変更または削除されています')
+    }
+    if (new Set(result.gemAssignments.map(a => a.slotType)).size !== result.gemAssignments.length) throw Error('同じ部位に複数のジェムは装着できません')
+    const position = Array.from({ length: MAX_COMMANDERS }, (_, i) => i + 1).find(n => !usedPositions.has(n))
+    if (!position) throw Error('管理枠は35体までです。空き番号がありません')
+    usedPositions.add(position)
+    eqIds.forEach(id => usedEq.add(id)); gemIds.forEach(id => usedGem.add(id))
+    const id = crypto.randomUUID()
+    newBuilds.push({
+      id, position, name: name.trim(), presetId,
+      equipmentIds: Object.fromEntries(chosen.map(v => [v.slot, v.id])) as Partial<Record<SlotType, string>>,
+      gemAssignments: result.gemAssignments.map(a => ({ ...a })),
+      calculatedStats: { ...result.totals, _approximate: result.approximate }, createdAt: now,
+    })
+    newEq.push(...chosen.map(v => ({ equipmentId: v.id as string, commanderBuildId: id, slotType: v.slot, allocatedAt: now })))
+    newGem.push(...result.gemAssignments.map(a => ({ gemId: a.gemId, commanderBuildId: id, slotType: a.slotType, allocatedAt: now })))
   }
   await db.replaceAll({
-    commanders: [...commanders, build],
-    equipmentAllocations: [...eqAlloc, ...chosen.map(v => ({ equipmentId: v.id as string, commanderBuildId: id, slotType: v.slot, allocatedAt: now }))],
-    gemAllocations: [...gemAlloc, ...result.gemAssignments.map(a => ({ gemId: a.gemId, commanderBuildId: id, slotType: a.slotType, allocatedAt: now }))]
-  }, { commanders, equipment, gems, equipmentAllocations: eqAlloc, gemAllocations: gemAlloc })
-  return build
+    commanders: [...commanders, ...newBuilds], equipmentAllocations: newEq, gemAllocations: newGem,
+  }, { equipment, gems, presets, ...inputs, commanders, equipmentAllocations: eqAlloc, gemAllocations: gemAlloc })
+  return newBuilds
+}
+export async function saveCommander(db: Database, name: string, presetId: string, result: OptimizationResult, inputs?: OptimizationInputs): Promise<CommanderBuild> {
+  return (await saveCommanders(db, [{ name, presetId, result }], inputs))[0]
 }
 export async function deleteCommander(db: Database, id: string): Promise<void> {
   const [commanders, eqAlloc, gemAlloc] = await Promise.all([

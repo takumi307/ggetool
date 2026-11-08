@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { validEffectNumber } from '@/domain/validation'
+import { useRoute } from 'vue-router'
+import { objectiveDescription, STAGE_LABELS } from '@/domain/optimizationInsight'
 import { useDb, useAppStore } from '@/stores/app'
 import { canonicalStatId } from '@/domain/statAliases'
 import { castellanScoringStats } from '@/domain/effects'
@@ -7,20 +10,16 @@ import { defaultPresetObjective, objectiveTargetIds, validatePresetObjective } f
 import type { BuildPreset, ObjectiveStage, StatDefinition, Equipment } from '@/domain'
 
 const db = useDb()
+const route = useRoute()
 const app = useAppStore()
 const { workspace, roleLabel } = app
 const presets = ref<BuildPreset[]>([]), stats = ref<StatDefinition[]>([]), equipment = ref<Equipment[]>([]), editing = ref<BuildPreset | null>(null), error = ref('')
-const stageLabels: Record<ObjectiveStage, string> = {
-  planPriority: '作成計画の優先度',
-  weighted: '目標外の加点',
-  overshoot: '目標超過分',
-  stability: '付け替えの少なさ',
-}
+const stageLabels = STAGE_LABELS
 const weightedOptions = computed(() => {
   const preset = editing.value
   if (!preset) return []
   const targetIds = objectiveTargetIds(preset)
-  return stats.value.filter(stat => !targetIds.has(canonicalStatId(stat.id)))
+  return stats.value.filter(stat => canonicalStatId(stat.id) === stat.id && !targetIds.has(canonicalStatId(stat.id)))
     .map(stat => ({ title: stat.name, value: stat.id }))
 })
 function setDetailedObjective(enabled: boolean | null) {
@@ -44,6 +43,17 @@ function applyDefenseWeights(defense: NonNullable<BuildPreset['castellanObjectiv
     .map(({ id, weight }) => ({ statId: id, weight }))
   preset.castellanObjective = defense
 }
+function applyAttackWeights(npc: boolean) {
+  const p = editing.value
+  if (!p?.objective) return
+  const candidates: [string, number][] = [
+    ['S001', 5], ['S002', 5], ['S003', 5], ['S007', 2], ['S009', 3], ['S010', 3], ['S014', 3],
+    ...(npc ? [['G004', 5], ['G005', 5], ['G006', 3], ['G007', 3], ['G009', 5]] as [string, number][] : []),
+  ]
+  const targets = objectiveTargetIds(p)
+  p.objective.weights = candidates.filter(([id]) => stats.value.some(s => s.id === id) && !targets.has(id))
+    .map(([statId, weight]) => ({ statId, weight }))
+}
 function moveStage(index: number, offset: number) {
   const order = editing.value?.objective?.order
   if (!order || index + offset < 0 || index + offset >= order.length) return
@@ -58,7 +68,7 @@ const castellanObjectives = [
 ]
 const defaults: { name: string; targets: readonly (readonly [string, number])[]; defaultCount: number; description: string; castellanObjective?: BuildPreset['castellanObjective'] }[] = workspace === 'castellan' ? [
   { name: 'NPC防衛・最大化', targets: [], defaultCount: 1, castellanObjective: 'npc', description: '城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視し、略奪で失われる資源は加点しません。' },
-  { name: '対城主防衛・バランス', targets: [], defaultCount: 1, castellanObjective: 'lord', description: 'NPC向けの割当後、通常防衛と対城主効果を残りの装備で均等に高めます。作成計画で必要数を指定できます。' },
+  { name: '対城主防衛・バランス', targets: [], defaultCount: 1, castellanObjective: 'lord', description: '通常防衛と対城主効果を評価します。他のプリセットと同時に装備を配分します。作成計画で必要数を指定できます。' },
   { name: '防御バランス（例）', targets: [['C001', 100], ['C002', 100], ['C003', 50]], defaultCount: 1, description: '編集できる目標の例です。ゲームの上限値ではありません。' }
 ] : [
   { name: 'バランス型', targets: [['S002', 120], ['S001', 120], ['S003', 50]], defaultCount: 30, description: '暫定の最低条件。合計150%への接近とNPC補正を含む80%の最適化は未対応。' },
@@ -66,7 +76,11 @@ const defaults: { name: string; targets: readonly (readonly [string, number])[];
   { name: '援軍特化型', targets: [['S002', 120], ['S003', 50], ['S007', 90]], defaultCount: 1, description: '遠隔兵120%、中庭50%、移動速度90%' }
 ]
 async function reload() { presets.value = await db.repo('presets').getAll(); stats.value = await db.repo('stats').getAll(); equipment.value = await db.repo('equipment').getAll() }
-onMounted(reload)
+onMounted(async () => {
+  await reload()
+  const requested = presets.value.find(p => p.id === route.query.edit)
+  if (requested) start(requested)
+})
 function fresh(): BuildPreset {
   return { id: crypto.randomUUID(), name: '', targets: [], priorityStats: [], maximizeStats: [], defaultCount: 1, priority: 1, description: '' }
 }
@@ -98,8 +112,8 @@ async function save() {
   error.value = ''
   const p = editing.value
   if (!p.name.trim() || !Number.isInteger(p.defaultCount) || p.defaultCount < 1) { error.value = '名前と作成個数（1以上の整数）を確認してください'; return }
-  if (p.targets.some(t => !stats.value.some(s => s.id === t.statId) || !Number.isFinite(t.minValue) || t.minValue < 0) ||
-      new Set(p.targets.map(t => t.statId)).size !== p.targets.length) { error.value = '目標の効果・数値・重複を確認してください'; return }
+  if (p.targets.some(t => !stats.value.some(s => s.id === t.statId) || !validEffectNumber(t.minValue)) ||
+      new Set(p.targets.map(t => canonicalStatId(t.statId))).size !== p.targets.length) { error.value = '目標の効果・重複を確認してください。数値は0〜100000、小数点以下3桁以内です'; return }
   if (p.requiredEquipmentStatId && !stats.value.some(s => s.id === p.requiredEquipmentStatId)) { error.value = '必須装備効果を選択してください'; return }
   if (!p.requiredEquipmentStatId && p.requiredEquipmentKeyword?.trim() && !equipment.value.some(e => e.name.includes(p.requiredEquipmentKeyword!.trim()))) { error.value = '必須装備の名前条件に一致する装備がありません。装備管理の名称を確認してください'; return }
   p.requiredEquipmentKeyword = p.requiredEquipmentStatId ? '' : (p.requiredEquipmentKeyword?.trim() ?? '')
@@ -127,7 +141,8 @@ async function remove(p: BuildPreset) {
   <v-card v-for="p in presets" :key="p.id" class="pa-3 mb-2">
     <strong>{{ p.name }}</strong><span v-if="p.requiredEquipmentStatId" class="text-caption ml-2">必須装備効果：{{ stats.find(s => s.id === p.requiredEquipmentStatId)?.name ?? p.requiredEquipmentStatId }}</span><span v-if="p.requiredEquipmentKeyword" class="text-caption ml-2">必須装備：{{ p.requiredEquipmentKeyword }}</span>
     <p class="text-body-2">{{ p.targets.map(t => (stats.find(s => s.id === t.statId)?.name ?? t.statId) + ' ≥ ' + t.minValue).join(' / ') || '最低目標なし' }}</p>
-    <p v-if="workspace === 'castellan'" class="text-caption">{{ castellanObjectives.find(option => option.value === (p.castellanObjective ?? 'general'))?.title }} ／ 目標外の防衛効果も評価</p>
+    <p class="text-caption mt-1">{{ objectiveDescription(p, workspace === 'castellan') }}</p>
+    <v-btn size="small" variant="tonal" color="primary" :to="{ path: '/optimize', query: { presetId: p.id, mode: 'single' } }">この目標で1体作る</v-btn>
     <v-btn size="small" variant="text" @click="start(p)">編集</v-btn>
     <v-btn size="small" variant="text" color="error" @click="remove(p)">削除</v-btn>
   </v-card>
@@ -146,12 +161,12 @@ async function remove(p: BuildPreset) {
       <p v-if="workspace === 'castellan'" class="text-body-2 mb-2">最低目標を優先し、目標に含まれない効果は防衛方針に合わせてできるだけ高めます。</p>
       <p v-if="editing.castellanObjective === 'npc' && !editing.objective" class="text-body-2 mb-2">城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視します。略奪で失われる資源は加点しません。</p>
       <v-row v-for="(t, i) in editing.targets" :key="i" dense>
-        <v-col cols="7"><v-select v-model="t.statId" :items="stats.filter(s => workspace === 'commander' || canonicalStatId(s.id) === s.id).map(s => ({ title: s.name, value: s.id }))" label="効果" /></v-col>
-        <v-col cols="4"><v-text-field v-model.number="t.minValue" type="number" label="目標値" /></v-col>
-        <v-col cols="1"><v-btn icon="mdi-close" size="small" variant="text" @click="editing.targets.splice(i, 1)" /></v-col>
+        <v-col cols="7"><v-autocomplete v-model="t.statId" :items="stats.filter(s => workspace === 'commander' || canonicalStatId(s.id) === s.id).map(s => ({ title: s.name, value: s.id }))" label="効果" /></v-col>
+        <v-col cols="4"><v-text-field v-model.number="t.minValue" type="number" label="最低目標値" min="0" step="0.001" :suffix="stats.find(s => s.id === t.statId)?.unit ?? '%'" /></v-col>
+        <v-col cols="1"><v-btn icon="mdi-close" aria-label="最低目標を削除" size="small" variant="text" @click="editing.targets.splice(i, 1)" /></v-col>
       </v-row>
       <v-btn variant="outlined" class="mb-3" @click="editing.targets.push({ statId: '', minValue: 0 })">目標を追加</v-btn>
-      <details class="mb-3">
+      <details class="mb-3" :open="Boolean(editing.objective)">
         <summary class="text-subtitle-1">詳細設定</summary>
         <v-checkbox :model-value="Boolean(editing.objective)" label="このプリセットの採点をカスタマイズする"
           hide-details @update:model-value="setDetailedObjective" />
@@ -168,6 +183,11 @@ async function remove(p: BuildPreset) {
             <v-btn variant="outlined" size="small" @click="applyDefenseWeights('npc')">NPC防衛の重みを適用</v-btn>
             <v-btn variant="outlined" size="small" @click="applyDefenseWeights('lord')">対城主防衛の重みを適用</v-btn>
           </div>
+          <div v-if="workspace === 'commander'" class="d-flex flex-wrap ga-2 mb-3">
+            <v-btn variant="outlined" size="small" @click="applyAttackWeights(false)">汎用攻撃の重みを適用</v-btn>
+            <v-btn variant="outlined" size="small" @click="applyAttackWeights(true)">NPC攻撃の重みを適用</v-btn>
+          </div>
+          <p class="text-caption mb-3">上限に対する達成割合などを基準に採点します。重み5は重み1の5倍重視します。加点を設定しない効果は、この段階では比較しません。</p>
           <v-row v-for="(entry, i) in editing.objective.weights" :key="i" dense>
             <v-col cols="7"><v-autocomplete v-model="entry.statId" :items="weightedOptions" label="加点する効果" /></v-col>
             <v-col cols="4"><v-text-field v-model.number="entry.weight" type="number" min="1" max="100" step="1" label="重み" /></v-col>

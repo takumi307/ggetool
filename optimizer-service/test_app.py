@@ -286,3 +286,101 @@ def test_custom_overshoot_never_sacrifices_count():
         job["overshoot"] = "minimize"
     result = client.post("/optimize", json=p).json()
     assert result["optimal"] and result["achieved"] == 2
+
+
+def test_commander_courtyard_shares_equipment_and_gem_cap():
+    p = payload()
+    p["jobs"] = p["jobs"][:1]
+    p["stats"] = [{"id": "S003", "capStatus": "known", "cap": 100}]
+    p["equipment"][0]["effects"] = [{"statId": "S003", "value": 90}]
+    p["gems"] = [{"id": "g", "allowedSlots": ["helmet"], "effects": [{"statId": "S003", "value": 30}]}]
+    p["jobs"][0]["targets"] = [{"statId": "S003", "minValue": 100}]
+    result = client.post("/optimize", json=p).json()
+    assert result["builds"][0]["shortfalls"][0]["actual"] == 100
+    p["jobs"][0]["targets"][0]["minValue"] = 101
+    assert client.post("/optimize", json=p).json()["achieved"] == 0
+
+
+def test_timeout_on_count_still_improves_quality(monkeypatch):
+    from app import cp_model
+    original = cp_model.CpSolver.Solve
+    calls = []
+    def limited(self, model, *args, **kwargs):
+        status = original(self, model, *args, **kwargs)
+        calls.append(status)
+        return cp_model.FEASIBLE if len(calls) == 1 else status
+    monkeypatch.setattr(cp_model.CpSolver, "Solve", limited)
+    p = payload()
+    p["jobs"] = p["jobs"][:1]
+    p["objectiveOrder"] = OBJECTIVE_ORDER
+    p["jobs"][0]["scoring"] = [{"id": "speed", "scale": 20, "weight": 5}]
+    p["equipment"][1]["effects"].append({"statId": "speed", "value": 20})
+    result = client.post("/optimize", json=p).json()
+    assert result["achieved"] == 1
+    assert result["builds"][0]["equipmentIds"]["helmet"] == "h2"
+    assert result["optimal"] is False
+    assert result["status"] == "FEASIBLE"
+    assert result["stages"][0]["status"] == "FEASIBLE"
+    assert any(stage["id"] == "weighted" for stage in result["stages"])
+    assert len(calls) >= 3
+
+
+def test_later_timeout_retains_incumbent_and_continues(monkeypatch):
+    from app import cp_model
+    original = cp_model.CpSolver.Solve
+    calls = []
+    def limited(self, model, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            return cp_model.UNKNOWN
+        return original(self, model, *args, **kwargs)
+    monkeypatch.setattr(cp_model.CpSolver, "Solve", limited)
+    p = payload()
+    p["jobs"] = p["jobs"][:1]
+    p["objectiveOrder"] = OBJECTIVE_ORDER
+    p["jobs"][0]["overshoot"] = "reward"
+    p["equipment"][1]["effects"][0]["value"] = 15
+    result = client.post("/optimize", json=p).json()
+    assert result["countOptimal"] is True
+    assert result["optimal"] is False
+    assert result["achieved"] == 1
+    assert result["builds"][0]["equipmentIds"]["helmet"] == "h2"
+
+
+def test_joint_assignment_improves_over_greedy_first_job():
+    p = payload()
+    p["equipment"][0]["effects"] = [{"statId": "power", "value": 15}, {"statId": "speed", "value": 10}]
+    p["equipment"][1]["effects"] = [{"statId": "power", "value": 10}, {"statId": "speed", "value": 5}]
+    p["gems"] = [{"id": "boost", "allowedSlots": ["helmet"], "effects": [{"statId": "power", "value": 5}]}]
+    p["jobs"][0]["targets"][0]["minValue"] = 15
+    for job, weight in zip(p["jobs"], [1, 5]):
+        job["scoring"] = [{"id": "speed", "scale": 10, "weight": weight}]
+    p["objectiveOrder"] = OBJECTIVE_ORDER
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] and result["achieved"] == 2
+    by_job = {b["ordinal"]: b for b in result["builds"]}
+    assert by_job[1]["equipmentIds"]["helmet"] == "h2"
+    assert by_job[2]["equipmentIds"]["helmet"] == "h1"
+
+
+def test_progress_reports_count_and_quality():
+    from app import Request, solve_request
+    p = payload()
+    p["castellan"] = True
+    p["jobs"][0]["scoring"] = [{"id": "power", "scale": 20, "weight": 1}]
+    progress = []
+    result = solve_request(Request(**p), progress.append)
+    assert result["countOptimal"] is True
+    assert result["elapsedSeconds"] >= 0
+    assert progress[0]["stage"] == "count"
+    assert progress[-1]["stage"] == "weighted"
+    assert progress[-1]["achieved"] == 2
+
+
+def test_request_rejects_precision_and_duplicate_jobs():
+    p = payload()
+    p["equipment"][0]["effects"][0]["value"] = 0.0001
+    assert client.post("/optimize", json=p).status_code == 422
+    p = payload()
+    p["jobs"].append(p["jobs"][0])
+    assert client.post("/jobs", json=p).status_code == 422

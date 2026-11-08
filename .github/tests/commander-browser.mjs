@@ -76,6 +76,7 @@ try {
   await page.goto(root + '/#/gems/edit')
   await visible(select('ジェムの対象'))
   assert.equal(await select('効果').first().isEnabled(), false)
+  assert.equal(await select('効果').first().inputValue(), '')
   await select('ジェムの対象').press('ArrowDown')
   await option('城主ターゲット').click()
   await select('効果').first().press('ArrowDown')
@@ -87,8 +88,9 @@ try {
   await select('効果').first().press('ArrowDown')
   await visible(option('NPCの城壁の防御力'))
   await visible(option('中庭で攻撃する際の戦闘力（ジェム）'))
+  await select('効果').first().press('Escape')
 
-  await page.goto(root + '/#/backup')
+  await link('バックアップ・復元').click()
   await page.locator('input[type=file]').setInputFiles({
     name: 'reoptimization-fixture.json',
     mimeType: 'application/json',

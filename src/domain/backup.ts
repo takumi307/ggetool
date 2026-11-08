@@ -1,5 +1,6 @@
 import { SCHEMA_VERSION, SLOT_TYPES, type Equipment, type Gem, type StatDefinition } from './types'
 import { STORE_NAMES, STORE_KEYS, type Database, type StoreName, type StoreSchemas } from '@/repositories/types'
+import { objectiveTargetIds, validatePresetObjective } from './presetObjective'
 import { mergeCastellanStats } from './castellanStats'
 import { WORKSPACE_LABELS, type BuildWorkspace } from './workspace'
 import { validateEquipment, validateGem, validateStat } from './validation'
@@ -49,6 +50,8 @@ export function parseBackup(text: string, workspace: BuildWorkspace = 'commander
     if (p.castellanObjective !== undefined && (workspace !== 'castellan' || !['general', 'npc', 'lord'].includes(p.castellanObjective))) throw Error('城代の最適化方針が不正です')
     if (!Array.isArray(p.targets) || !Array.isArray(p.priorityStats) || !Array.isArray(p.maximizeStats)) throw Error('プリセットが不正です')
     if (p.targets.some(v => !statIds.has(v.statId) || !Number.isFinite(v.minValue)) || [...p.priorityStats, ...p.maximizeStats].some(id => !statIds.has(id))) throw Error('プリセットに不正な効果参照があります')
+    const objectiveIssue = validatePresetObjective(p.objective, statIds, objectiveTargetIds(p))
+    if (objectiveIssue) throw Error(objectiveIssue)
   }
   for (const plan of stores.plans as StoreSchemas['plans'][]) if (!presetIds.has(plan.presetId)) throw Error('作成計画に不正な参照があります')
   for (const commander of stores.commanders as StoreSchemas['commanders'][]) {

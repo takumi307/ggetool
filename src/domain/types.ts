@@ -65,7 +65,16 @@ export interface BuildTarget {
   minValue: number
 }
 
+export type ObjectiveStage = 'planPriority' | 'weighted' | 'overshoot' | 'stability'
+export interface PresetObjective {
+  order: ObjectiveStage[]
+  weights: { statId: string; weight: number }[]
+  overshoot: 'ignore' | 'minimize' | 'reward'
+  reopt: { keepGems: boolean; minimizeSwaps: boolean }
+}
+
 export interface BuildPreset {
+  objective?: PresetObjective
   castellanObjective?: 'general' | 'npc' | 'lord'
   /** 各司令官に必ず1個以上使う装備の名前部分一致条件。空なら制約なし */
   requiredEquipmentKeyword?: string

@@ -49,7 +49,9 @@ class Target(BaseModel):
 class ScoringStat(BaseModel):
     id: str
     scale: float = Field(gt=0, le=100000000)
-    weight: int = Field(ge=1, le=5)
+    weight: int = Field(ge=1, le=100)
+
+ObjectiveStage = Literal["planPriority", "weighted", "overshoot", "stability"]
 
 class Job(BaseModel):
     requiredEquipmentIds: list[str] = Field(default_factory=list)
@@ -59,11 +61,15 @@ class Job(BaseModel):
     priority: int = Field(ge=1)
     targets: list[Target]
     scoring: list[ScoringStat] = Field(default_factory=list, max_length=300)
+    overshoot: Literal["ignore", "minimize", "reward"] = "ignore"
+    keepEquipment: bool = True
+    keepGems: bool = True
     previousEquipmentIds: dict[str, str] = Field(default_factory=dict)
     previousGemIds: dict[str, str] = Field(default_factory=dict)
 class Request(BaseModel):
     requestId: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     castellan: bool = False
+    objectiveOrder: list[ObjectiveStage] | None = None
     equipment: list[Equipment] = Field(max_length=1500)
     gems: list[Gem] = Field(max_length=1500)
     stats: list[Stat] = Field(max_length=300)
@@ -74,6 +80,8 @@ class Request(BaseModel):
     timeLimitSeconds: int = Field(default=60, ge=5, le=1800)
     @model_validator(mode="after")
     def check_ids(self):
+        if self.objectiveOrder is not None and (len(self.objectiveOrder) != 4 or len(set(self.objectiveOrder)) != 4):
+            raise ValueError("Invalid objective stage order")
         if len({e.id for e in self.equipment}) != len(self.equipment):
             raise ValueError("Duplicate equipment IDs")
         if len({g.id for g in self.gems}) != len(self.gems):
@@ -108,7 +116,7 @@ def optimize(data: Request):
         for slot in g.allowedSlots:
             gems_by_slot[slot].append(g)
     relevant_stats = {stat for job in data.jobs for t in job.targets for stat in (t.statId, t.npcBonusStatId) if stat}
-    if data.castellan:
+    if data.castellan or data.objectiveOrder is not None:
         relevant_stats.update(stat.id for job in data.jobs for stat in job.scoring)
     def effect_totals(item):
         result = {}
@@ -157,6 +165,7 @@ def optimize(data: Request):
     previous_identical = {}
     for j, job in enumerate(data.jobs):
         signature = (job.presetId, job.priority, job.requireEquipment,
+                     job.overshoot, job.keepEquipment, job.keepGems,
                      tuple(sorted(job.requiredEquipmentIds)),
                      tuple(sorted(job.previousEquipmentIds.items())),
                      tuple(sorted(job.previousGemIds.items())),
@@ -209,18 +218,18 @@ def optimize(data: Request):
             target_values[j, index] = value
             model.Add(value >= scaled(target.minValue) * active[j])
 
-    # Count, then plan priority, then the quality of non-target effects.
-    # Build quality terms only after the earlier stages find usable solutions.
     count = sum(active)
     if data.maxAchieved is not None:
         model.Add(count <= data.maxAchieved)
-    model.Maximize(count)
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = data.timeLimitSeconds
-    solver.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
-    status = solver.Solve(model)
-    # Integer objective: CP-SAT best bound is a certified upper bound on the
-    # maximum achievable count (not an estimate of the next feasible solution).
+
+    def solve(objective):
+        model.Maximize(objective)
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = data.timeLimitSeconds
+        solver.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
+        return solver, solver.Solve(model)
+
+    solver, status = solve(count)
     bound = min(n, max(0, math.floor(solver.BestObjectiveBound() + 1e-6)))
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {"status": solver.StatusName(status), "optimal": False, "achieved": 0, "upperBound": bound if status != cp_model.MODEL_INVALID else None, "requested": n, "builds": []}
@@ -228,68 +237,100 @@ def optimize(data: Request):
     bound = max(first_count, bound)
     best_solver = solver
     final_status = status
-    # Only perform priority tie-break if the maximum count is proven.
-    if status == cp_model.OPTIMAL:
-        model.Add(count == first_count)
-        max_priority = max(job.priority for job in data.jobs)
-        weights = [max_priority + 1 - job.priority for job in data.jobs]
-        # Preserve priority as the dominant tie-break, then retain existing
-        # equipment/gems when equally many builds meet their targets.
-        # Each active job can retain at most 4 equipment and 4 gems.
+
+    def stability_terms():
         retained = []
         for j, job in enumerate(data.jobs):
-            for slot, eid in job.previousEquipmentIds.items():
-                var = x.get((j, slot, eid))
-                if var is not None:
-                    retained.append(var)
-            if job.previousEquipmentIds or job.previousGemIds:
+            if job.keepEquipment:
+                for slot, eid in job.previousEquipmentIds.items():
+                    var = x.get((j, slot, eid))
+                    if var is not None:
+                        retained.append(var)
+            if job.keepGems and (job.previousEquipmentIds or job.previousGemIds):
                 for slot in SLOTS:
                     gid = job.previousGemIds.get(slot)
                     if gid is None:
-                        # An empty slot is also part of the previous assignment.
                         occupied = sum(y[j, slot, gem.id] for gem in gems_by_slot[slot])
                         retained.append(active[j] - occupied)
                     else:
                         var = y.get((j, slot, gid))
                         if var is not None:
                             retained.append(var)
-        priority = sum(weights[j] * active[j] for j in range(n))
-        model.Maximize(priority if data.castellan else (8 * n + 1) * priority + sum(retained))
-        second = cp_model.CpSolver()
-        second.parameters.max_time_in_seconds = data.timeLimitSeconds
-        second.parameters.num_search_workers = max(1, min(8, int(os.getenv("CPSAT_WORKERS", "2"))))
-        second_status = second.Solve(model)
-        final_status = cp_model.OPTIMAL if second_status == cp_model.OPTIMAL else cp_model.FEASIBLE
-        if second_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            best_solver = second
-            if data.castellan and first_count and any(job.scoring for job in data.jobs):
-                model.Add(priority == second.Value(priority))
-                maxima = {stat: len(SLOTS) * (
-                    max((e.get(stat, 0) for e in equipment_effects.values()), default=0) +
-                    max((g.get(stat, 0) for g in gem_effects.values()), default=0)
-                ) for stat in relevant_stats}
-                quality = []
-                for j, job in enumerate(data.jobs):
-                    for stat in job.scoring:
-                        maximum = maxima[stat.id]
-                        if not maximum:
-                            continue
-                        denominator = max(1, round(stat.scale * SCALE))
-                        value = model.NewIntVar(0, maximum, f"score_value_{j}_{stat.id}")
-                        model.Add(value == effective_stat(j, stat.id))
-                        points = model.NewIntVar(0, maximum * SCALE // denominator, f"score_{j}_{stat.id}")
-                        model.AddDivisionEquality(points, value * SCALE, denominator)
-                        quality.append(stat.weight * points)
-                if quality:
-                    model.Maximize(sum(quality))
-                    third = cp_model.CpSolver()
-                    third.parameters.max_time_in_seconds = second.parameters.max_time_in_seconds
-                    third.parameters.num_search_workers = second.parameters.num_search_workers
-                    third_status = third.Solve(model)
-                    if third_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                        best_solver = third
-                    if third_status != cp_model.OPTIMAL:
-                        final_status = cp_model.FEASIBLE
+        return retained
+
+    def max_effect_totals():
+        return {stat: len(SLOTS) * (
+            max((e.get(stat, 0) for e in equipment_effects.values()), default=0) +
+            max((g.get(stat, 0) for g in gem_effects.values()), default=0)
+        ) for stat in relevant_stats}
+
+    def normalized_points(expression, maximum, denominator, name):
+        value = model.NewIntVar(0, maximum, f"{name}_value")
+        model.Add(value == expression)
+        points = model.NewIntVar(0, maximum * SCALE // denominator, name)
+        model.AddDivisionEquality(points, value * SCALE, denominator)
+        return points
+
+    def weighted_terms():
+        if not any(job.scoring for job in data.jobs):
+            return []
+        maxima = max_effect_totals()
+        return [
+            stat.weight * normalized_points(effective_stat(j, stat.id), maxima[stat.id],
+                                            max(1, round(stat.scale * SCALE)), f"score_{j}_{index}")
+            for j, job in enumerate(data.jobs) for index, stat in enumerate(job.scoring)
+            if maxima[stat.id]
+        ]
+
+    def overshoot_terms():
+        if all(job.overshoot == "ignore" for job in data.jobs):
+            return []
+        maxima = max_effect_totals()
+        terms = []
+        for j, job in enumerate(data.jobs):
+            if job.overshoot == "ignore":
+                continue
+            for index, target in enumerate(job.targets):
+                minimum = scaled(target.minValue)
+                maximum = maxima[target.statId] + maxima.get(target.npcBonusStatId, 0)
+                if maximum <= minimum:
+                    continue
+                excess = target_values[j, index] - minimum * active[j]
+                points = normalized_points(excess, maximum - minimum, max(SCALE, minimum), f"excess_{j}_{index}")
+                terms.append(points if job.overshoot == "reward" else -points)
+        return terms
+
+    if status == cp_model.OPTIMAL and first_count:
+        model.Add(count == first_count)
+        max_priority = max(job.priority for job in data.jobs)
+        priority = sum((max_priority + 1 - job.priority) * active[j] for j, job in enumerate(data.jobs))
+        if data.objectiveOrder is None and not data.castellan:
+            # Keep the existing commander tie-break and its two-stage time budget.
+            legacy, stage_status = solve((8 * n + 1) * priority + sum(stability_terms()))
+            if stage_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                best_solver = legacy
+            final_status = cp_model.OPTIMAL if stage_status == cp_model.OPTIMAL else cp_model.FEASIBLE
+        else:
+            stages = {
+                "planPriority": lambda: [priority],
+                "weighted": weighted_terms,
+                "overshoot": overshoot_terms,
+                "stability": stability_terms,
+            }
+            order = data.objectiveOrder or ["planPriority", "weighted"]
+            for stage in order:
+                terms = stages[stage]()
+                if not terms:
+                    continue
+                objective = sum(terms)
+                candidate, stage_status = solve(objective)
+                if stage_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                    best_solver = candidate
+                if stage_status != cp_model.OPTIMAL:
+                    final_status = cp_model.FEASIBLE
+                    if data.objectiveOrder is not None or stage_status != cp_model.FEASIBLE:
+                        break
+                model.Add(objective == candidate.Value(objective))
     builds = []
     for j, job in enumerate(data.jobs):
         if not best_solver.Value(active[j]):
@@ -356,7 +397,7 @@ def start_job(data: Request):
         if existing is not None:
             if existing["fingerprint"] != fingerprint:
                 raise HTTPException(status_code=409, detail="同じ依頼IDに異なる計算データが送信されました。")
-            return {"jobId": job_id, "state": existing["state"], "castellan": data.castellan}
+            return {"jobId": job_id, "state": existing["state"], "castellan": data.castellan, "objectiveVersion": 1}
         # Free-tier instance: prevent unbounded CPU and memory queues.
         if any(job["state"] == "running" for job in _jobs.values()):
             raise HTTPException(status_code=429, detail="別の最適化を実行中です。完了後に再試行してください。")
@@ -365,7 +406,7 @@ def start_job(data: Request):
             del _jobs[oldest]
         _jobs[job_id] = {"state": "running", "updated": time.monotonic(), "fingerprint": fingerprint}
     _executor.submit(_run_job, job_id, data)
-    return {"jobId": job_id, "state": "running", "castellan": data.castellan}
+    return {"jobId": job_id, "state": "running", "castellan": data.castellan, "objectiveVersion": 1}
 
 @app.get("/jobs/{job_id}")
 def job_status(job_id: str):

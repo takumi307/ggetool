@@ -1,5 +1,6 @@
 import { canonicalStatId } from './statAliases'
 import { addEffects, castellanScoringScales, castellanScoringStats, knownCaps, npcBonusId, requiredEquipmentMatcher, targetActual, type Totals } from './effects'
+import { objectiveTargetIds } from './presetObjective'
 import type { BuildPreset, Equipment, Gem, SlotType, StatDefinition } from './types'
 import type { OptimizationResult } from './optimizer'
 
@@ -57,25 +58,43 @@ export async function optimizeCpSat(input: {
     const abort = () => { clearTimeout(timer); reject(new DOMException('中断しました', 'AbortError')) }
     input.signal?.addEventListener('abort', abort, { once: true })
   })
-  const scales = input.castellan ? castellanScoringScales(input.stats, [...input.equipment, ...input.gems]) : new Map<string, number>()
+  const objectives = input.jobs.flatMap(job => job.preset.objective ? [job.preset.objective] : [])
+  const objectiveOrder = objectives[0]?.order
+  if (objectiveOrder && objectives.some(objective => objective.order.join(',') !== objectiveOrder.join(','))) {
+    throw new Error('一緒に計算するプリセットの詳細設定で、優先順をそろえてください。')
+  }
+  const scales = input.castellan || objectiveOrder ? castellanScoringScales(input.stats, [...input.equipment, ...input.gems]) : new Map<string, number>()
   // Cloud retries reuse the same ID so a lost response cannot start another calculation.
   const requestId = endpoint === '/api/optimizer' ? crypto.randomUUID().replace(/-/g, '') : undefined
   const body = JSON.stringify({
     requestId,
     castellan: input.castellan,
+    objectiveOrder,
     equipment: input.equipment.map(({ id, slotType, effects }) => ({ id, slotType, effects })),
     gems: input.gems.map(({ id, allowedSlots, effects }) => ({
       id, allowedSlots, effects: effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })),
     })),
     stats: input.stats.map(({ id, cap, capStatus }) => ({ id, cap, capStatus })),
-    jobs: input.jobs.map(j => ({
-      presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
-      scoring: input.castellan ? castellanScoringStats({ ...j.preset, castellanObjective: j.preset.castellanObjective ?? 'general' }, scales) : undefined,
-      previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
-      requireEquipment: Boolean(requiredEquipmentMatcher(j.preset)),
-      requiredEquipmentIds: (() => { const match = requiredEquipmentMatcher(j.preset); return match ? input.equipment.filter(match).map(e => e.id) : [] })(),
-      targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
-    })),
+    jobs: input.jobs.map(j => {
+      const objective = j.preset.objective
+      const targets = objectiveTargetIds(j.preset)
+      return {
+        presetId: j.preset.id, ordinal: j.ordinal, priority: j.priority,
+        scoring: objective ? objective.weights
+          .map(({ statId, weight }) => ({ id: canonicalStatId(statId), weight }))
+          .filter(({ id }) => !targets.has(id) && scales.has(id))
+          .map(stat => ({ ...stat, scale: scales.get(stat.id)! }))
+          .filter(stat => stat.scale > 0)
+          : input.castellan ? castellanScoringStats({ ...j.preset, castellanObjective: j.preset.castellanObjective ?? 'general' }, scales) : undefined,
+        overshoot: objective?.overshoot,
+        keepEquipment: objective?.reopt.minimizeSwaps ?? !input.castellan,
+        keepGems: objective?.reopt.keepGems ?? !input.castellan,
+        previousEquipmentIds: j.previousEquipmentIds ?? {}, previousGemIds: j.previousGemIds ?? {},
+        requireEquipment: Boolean(requiredEquipmentMatcher(j.preset)),
+        requiredEquipmentIds: (() => { const match = requiredEquipmentMatcher(j.preset); return match ? input.equipment.filter(match).map(e => e.id) : [] })(),
+        targets: j.preset.targets.map(t => ({ ...t, statId: canonicalStatId(t.statId), npcBonusStatId: npcBonusId(j.preset, t.statId) }))
+      }
+    }),
     reservedEquipmentIds: input.reservedEquipmentIds,
     reservedGemIds: input.reservedGemIds,
     maxAchieved: input.maxAchieved,
@@ -100,10 +119,11 @@ export async function optimizeCpSat(input: {
   if (response.status === 429) throw new Error('計算サーバーが別の計算を実行中です。完了後に再実行してください。')
   if (transient(response.status)) throw new Error('計算サーバーの応答を受け取れませんでした（HTTP ' + response.status + '）。少し待って再実行してください。')
   if (!response.ok) throw new Error('計算を開始できません（HTTP ' + response.status + '）。')
-  const started = await response.json() as { jobId: string; castellan?: boolean }
+  const started = await response.json() as { jobId: string; castellan?: boolean; objectiveVersion?: number }
+  if (objectiveOrder && started.objectiveVersion !== 1) throw new Error('詳細設定を使うには計算サーバーを最新版に更新してください。')
   if (input.castellan && started.castellan !== true) throw new Error('この計算サーバーは城代に未対応です。計算サーバーを最新版に更新してください。')
   if (!/^[a-f0-9]{32}$/.test(started.jobId)) throw new Error('不正なジョブIDです')
-  const waitMs = input.timeLimitSeconds * (input.castellan ? 3000 : 2000) + 120000
+  const waitMs = input.timeLimitSeconds * 1000 * (objectiveOrder ? objectiveOrder.length + 1 : input.castellan ? 3 : 2) + 120000
   const deadline = Date.now() + waitMs
   let data: ServerResponse | undefined
   while (Date.now() < deadline) {

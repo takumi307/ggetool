@@ -1,6 +1,6 @@
 # Deployment checklist (Render example)
 
-This repository contains the Python OR-Tools solver, but a GitHub merge does not deploy it.
+This repository contains the Python OR-Tools solver. A merge deploys it only when the connected Render service has automatic deployment enabled.
 
 1. Open [Render Dashboard](https://dashboard.render.com/) and choose **New > Web Service**, connecting `takumi307/ggetool`.
 2. Select **Docker**, set **Root Directory** to `optimizer-service`, and use `Dockerfile`. Alternatively, create the service from `optimizer-service/render.yaml` if Render accepts its blueprint location.
@@ -15,6 +15,6 @@ This repository contains the Python OR-Tools solver, but a GitHub merge does not
 
 - GitHub Actions workflow `CP-SAT service checks` must pass before production use.
 - The backend is stateless; inventory is transmitted to the optimizer. Do not include credentials or private notes beyond the required inventory fields.
-- The server time limit applies per phase. Commander requests run up to two phases and castellan requests run up to three (build count, plan priority, then total weighted defense score). The frontend uses the asynchronous job API for both. Deploy the updated optimizer before using castellan cloud or local execution.
+- The server time limit applies per phase. Default commander requests run up to two phases and default castellan requests up to three. Custom objectives can run up to five phases (count plus priority, weighted effects, overshoot, and retention). The frontend uses the asynchronous job API for both. Deploy the updated optimizer before using castellan cloud or local execution.
 - Stop/cancel in the browser aborts the HTTP request, but may not stop CPU computation already running server-side.
-- No deployment credentials or server connection are configured by this PR.
+- Updating the frontend does not update an already running local Python server. Follow `LOCAL_WINDOWS.md` to update and restart it.

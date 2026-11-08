@@ -16,12 +16,12 @@ export function knownCaps(stats: StatDefinition[]): Map<string, number> {
   return new Map(stats.filter(s => s.capStatus === 'known' && s.cap !== null).map(s => [s.id, s.cap as number]))
 }
 
-/** 計算の唯一の定義: min(装備合計, 確認済み上限) + ジェム合計。 */
+/** 効果別の上限を適用。中庭は武具＋ジェムの合算上限、その他は個別規則。 */
 export function effectiveValue(equipment: Totals, gem: Totals, caps: Map<string, number>, id: string): number {
   const cap = caps.get(id) ?? Infinity
   const weapon = equipment[id] ?? 0
   const jewel = gem[id] ?? 0
-  if (id === 'C003') return Math.min(weapon + jewel, cap)
+  if (id === 'S003' || id === 'C003') return Math.min(weapon + jewel, cap)
   const gemCap = id === 'C007' ? caps.get('CG007') ?? Infinity
     : id.startsWith('CNG') || id.startsWith('CPG') ? cap : Infinity
   return Math.min(weapon, cap) + Math.min(jewel, gemCap)

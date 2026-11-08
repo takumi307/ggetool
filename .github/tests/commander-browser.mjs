@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { mkdir } from 'node:fs/promises'
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('playwright')
@@ -53,6 +54,7 @@ const fixture = {
   },
 }
 const browser = await chromium.launch()
+await mkdir('artifacts', { recursive: true })
 const page = await browser.newPage()
 page.setDefaultTimeout(12000)
 try {
@@ -113,6 +115,15 @@ try {
   await button('CP-SATで再最適化').click()
   await visible(link('CP-SAT最適化結果（2体）'))
   await visible(page.getByText('現在の構成から変更する装備・ジェム：2箇所。', { exact: false }))
+  await visible(page.getByText('人数の最大値は確定', { exact: true }))
+  await page.locator('.v-expansion-panel-title').first().click()
+  await visible(page.getByRole('columnheader', { name: '増減', exact: true }))
+  await page.setViewportSize({ width: 390, height: 844 })
+  await visible(page.getByRole('heading', { name: '3. 探索結果を確認', exact: true }))
+  await page.getByRole('heading', { name: '3. 探索結果を確認', exact: true }).scrollIntoViewIfNeeded()
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2), 'Mobile result page overflows horizontally')
+  await page.screenshot({ path: 'artifacts/optimizer-mobile.jpg', type: 'jpeg', quality: 80 })
+  await page.setViewportSize({ width: 1280, height: 900 })
   await button('全2体を安全に一括更新').click()
   await visible(page.getByText('2体を一括更新しました', { exact: false }))
 
@@ -255,6 +266,57 @@ try {
   await visible(card('検証-locked').getByText(/兜：locked-helmet/))
   assert.equal(await card('検証城代').count(), 0)
   console.log('Castellan optimization and independent saves verified')
+
+  // Validate both the blocking configuration message and the single-build
+  // optimistic upper-bound warning before any optimizer request is sent.
+  await link('バックアップ・復元').click()
+  const custom = { order: ['planPriority', 'weighted', 'overshoot', 'stability'], weights: [],
+    overshoot: 'ignore', reopt: { keepGems: true, minimizeSwaps: true } }
+  const invalidOrder = {
+    ...fixture,
+    stores: { ...fixture.stores, commanders: [], equipmentAllocations: [], gemAllocations: [],
+      presets: [
+        { ...fixture.stores.presets[0], objective: custom },
+        { ...fixture.stores.presets[0], id: 'other', name: '別の優先順', objective: { ...custom, order: [...custom.order].reverse() } },
+      ],
+      plans: [
+        { id: 'a', presetId: 'test-preset', count: 1, priority: 1, enabled: true },
+        { id: 'b', presetId: 'other', count: 1, priority: 2, enabled: true },
+      ],
+    },
+  }
+  await selectBackup(invalidOrder)
+  page.once('dialog', dialog => dialog.accept())
+  await button('確認して全件置換').click()
+  await visible(link('復元しました'))
+  await link('最適化実行').click()
+  await visible(page.getByText(/優先順が異なります/).first())
+  assert.equal(await button('CP-SATで新規作成').isEnabled(), false)
+  await link('目標・加点効果を編集').click()
+  await visible(heading('ビルドプリセット'))
+  await button('編集').first().click()
+  await visible(page.getByText('このプリセットの採点をカスタマイズする', { exact: true }))
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2), 'Mobile preset editor overflows horizontally')
+  await page.screenshot({ path: 'artifacts/preset-editor-mobile.jpg', type: 'jpeg', quality: 80 })
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await button('キャンセル').click()
+  await link('最適化実行').click()
+  await select('最適化モード').press('ArrowDown')
+  await option('1体だけ作る').click()
+  assert.equal(await button('最適化を実行').isEnabled(), true)
+  await visible(link('目標・加点効果を編集'))
+  await link('バックアップ・復元').click()
+  await selectBackup({ ...fixture, stores: { ...fixture.stores, commanders: [], equipmentAllocations: [], gemAllocations: [],
+    presets: [{ ...fixture.stores.presets[0], targets: [{ statId: 'test-power', minValue: 100 }] }], plans: [],
+  } })
+  page.once('dialog', dialog => dialog.accept())
+  await button('確認して全件置換').click()
+  await visible(link('復元しました'))
+  await link('最適化実行').click()
+  await visible(page.getByText('実行前の条件確認', { exact: true }))
+  await visible(page.getByText('検証プリセット：test-powerの目標 100 に対して、登録済み候補の上限は 80。', { exact: true }))
+  console.log('Optimization insight, objective conflict, and mobile result/editor layout verified')
 } catch (error) {
   console.error(await page.locator('body').innerText())
   throw error

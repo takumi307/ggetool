@@ -107,7 +107,7 @@ const fmt = (n: number) => Number(n.toFixed(3)).toLocaleString('ja-JP')
         <h3>{{ group.title }}</h3>
         <div v-for="row in group.rows" :key="row.id" class="stat-row">
           <div class="stat-main"><span>{{ row.name }}</span><strong>+{{ fmt(row.effective) }}{{ row.unit }}</strong></div>
-          <div class="stat-breakdown">装備 {{ fmt(row.equipment) }}{{ row.unit }}<template v-if="row.cap !== null">（上限 {{ fmt(row.cap) }}{{ row.unit }}{{ row.id === 'C003' ? '・武具とジェムの合計' : '' }}）</template> ＋ ジェム {{ fmt(row.gem) }}{{ row.unit }}</div>
+          <div class="stat-breakdown">装備 {{ fmt(row.equipment) }}{{ row.unit }}<template v-if="row.cap !== null">（上限 {{ fmt(row.cap) }}{{ row.unit }}{{ (row.id === 'S003' || row.id === 'C003') ? '・武具とジェムの合計' : '' }}）</template> ＋ ジェム {{ fmt(row.gem) }}{{ row.unit }}</div>
         </div>
       </section>
       <p class="footnote">現在登録されている武具・ジェムから再計算した値です。ゲーム内の補正・表示方法と完全一致する保証はありません。</p>

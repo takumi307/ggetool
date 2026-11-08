@@ -58,3 +58,9 @@ describe('single optimizer parity with multi-commander rules', () => {
     expect(r!.shortfalls[0].missing).toBe(0)
   })
 })
+
+it('shares commander courtyard cap between equipment and gems, including aliases', () => {
+  const parts = buildBreakdown({ equipmentIds: { helmet: 'h' }, gemAssignments: [{ gemId: 'g' }] },
+    [eq('h', 'helmet', [{ statId: 'S003', value: 90 }])], [gem('g', [{ statId: 'G008', value: 30 }])])
+  expect(targetActual({ name: '攻撃' }, 'G008', parts.equipment, parts.gem, knownCaps([stat('S003', 100)]))).toBe(100)
+})

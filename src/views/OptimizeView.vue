@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch, onBeforeUnmount } from 'vue'
+import { onMounted, ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import OptimizationSummary from '@/components/OptimizationSummary.vue'
+import BuildStatsPreview from '@/components/BuildStatsPreview.vue'
+import { STAGE_LABELS, inspectTargets, requiredEquipmentIssues, objectiveOrderIssue, objectiveDescription, maximumStages, jobPresets } from '@/domain/optimizationInsight'
 import EquipmentAvailability from '@/components/EquipmentAvailability.vue'
 import { equipmentAvailability } from '@/domain/equipmentAvailability'
-import { buildBreakdown, effectiveTotals, effectiveValue, knownCaps } from '@/domain/effects'
-import { canonicalStatId } from '@/domain/statAliases'
 import { useRoute } from 'vue-router'
 import type { StoreSnapshot } from '@/repositories/types'
 import { useDb, useAppStore } from '@/stores/app'
-import { saveCommander, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignments } from '@/domain/commanderService'
-import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob } from '@/domain/cpSatClient'
-import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type EquipmentAllocation, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
+import { saveCommander, saveCommanders, commanderNumber, MAX_COMMANDERS, replaceCommanderAssignments } from '@/domain/commanderService'
+import { optimizeCpSat, cpSatEndpoint, type CpSatBuild, type CpSatJob, type CpSatOutcome, type CpSatProgress } from '@/domain/cpSatClient'
+import { SLOT_TYPES, SLOT_LABELS, type BuildPreset, type BuildPlan, type Equipment, type EquipmentAllocation, type GemAllocation, type Gem, type StatDefinition, type SlotType, type CommanderBuild } from '@/domain'
 import type { OptimizationResult } from '@/domain/optimizer'
 
 const db = useDb()
@@ -19,14 +20,14 @@ const route = useRoute()
 const commanderName = ref(''), saved = ref(''), saving = ref(false)
 const plans = ref<BuildPlan[]>([])
 const progress = ref('')
+const searchProgress = ref<CpSatProgress | null>(null)
+const outcome = ref<CpSatOutcome | null>(null)
+const resultHeading = ref<HTMLElement | null>(null)
 const batchResults = ref<{ name: string; preset: string; result: OptimizationResult }[]>([])
 const cpSatPreview = ref<CpSatBuild[]>([])
 let previewInputs: StoreSnapshot = {}
-const cpSatStatus = ref('')
 const zeroDiagnostics = ref<{ preset: string; stat: string; required: number; optimistic: number; impossible: boolean }[]>([])
 const missingSlots = ref<string[]>([])
-const cpSatOptimal = ref(false)
-const cpSatUpperBound = ref<number | null>(null)
 const timeLimitSeconds = ref(60)
 const executionMode = ref<'render' | 'local'>(cpSatEndpoint ? 'render' : 'local')
 const executionOptions = [
@@ -46,6 +47,7 @@ const committing = ref(false)
 const allocationMode = ref<'single' | 'new' | 'selected' | 'all'>('single')
 const existingCommanders = ref<CommanderBuild[]>([])
 const equipmentAllocations = ref<EquipmentAllocation[]>([])
+const gemAllocations = ref<GemAllocation[]>([])
 const ready = ref(false)
 const selectedCommanderIds = ref<string[]>([])
 const replacementPreview = computed(() => cpSatPreview.value.filter(e => Boolean(e.job.commanderId)))
@@ -90,14 +92,16 @@ const pendingPlanCount = computed(() => activePlans.value.reduce((sum, plan) => 
   return sum + Math.max(0, plan.count - completed)
 }, 0))
 const freePositions = computed(() => Math.max(0, MAX_COMMANDERS - existingCommanders.value.length))
-const canRun = computed(() => ready.value && !running.value && !committing.value && !saving.value &&
+const canRun = computed(() => !configurationIssue.value && ready.value && !running.value && !committing.value && !saving.value &&
   availableSlots.value.every(slot => slot.available > 0) &&
   (reoptimizing.value ? targetCommanders.value.length > 0 : freePositions.value > 0) &&
   (allocationMode.value === 'new' ? pendingPlanCount.value > 0 : !singleBuild.value || Boolean(preset.value)))
 const presets = ref<BuildPreset[]>([]), equipment = ref<Equipment[]>([]), gems = ref<Gem[]>([]), stats = ref<StatDefinition[]>([])
 const selected = ref(''), result = ref<OptimizationResult | null>(null), message = ref(''), running = ref(false)
-watch([allocationMode, selectedCommanderIds, executionMode, timeLimitSeconds, selected], () => {
+watch([allocationMode, selectedCommanderIds, selected], () => {
   cpSatPreview.value = []
+  outcome.value = null
+  saved.value = ''
   zeroDiagnostics.value = []
   missingSlots.value = []
   message.value = ''
@@ -110,24 +114,73 @@ const eqName = (id?: string) => equipment.value.find(e => e.id === id)?.name ?? 
 const gemName = (id?: string) => gems.value.find(g => g.id === id)?.name ?? 'なし'
 const effectText = (id: string, value: number) => `${statName(id)}：${value}${stats.value.find(s => s.id === id)?.unit ?? '%'}`
 const itemEffects = (slot: SlotType, r: OptimizationResult) => equipment.value.find(e => e.id === r.equipmentIds[slot])?.effects ?? []
-const shownTotals = (r: OptimizationResult) => {
-  if (workspace !== 'castellan') return r.totals
-  const parts = buildBreakdown(r, equipment.value, gems.value)
-  return effectiveTotals(parts.equipment, parts.gem, knownCaps(stats.value))
-}
 const gemEffects = (slot: SlotType, r: OptimizationResult) => gems.value.find(g => g.id === r.gemAssignments.find(a => a.slotType === slot)?.gemId)?.effects ?? []
+
+function createJobs(): CpSatJob[] {
+  return singleBuild.value
+      ? (preset.value ? [{ preset: preset.value, ordinal: 1, priority: 1 }] : [])
+      : allocationMode.value === 'new'
+      ? activePlans.value.flatMap(plan => {
+          const chosen = presets.value.find(p => p.id === plan.presetId)
+          if (!chosen) return []
+          const done = existingCommanders.value.filter(c => c.presetId === chosen.id).length
+          return Array.from({ length: Math.min(100, Math.max(0, plan.count - done)) },
+            (_, index) => ({ preset: chosen, ordinal: done + index + 1, priority: plan.priority }))
+        }).slice(0, 100)
+      : targetCommanders.value.map((c, index) => ({
+          preset: presets.value.find(p => p.id === c.presetId)!,
+          ordinal: index + 101,
+          priority: activePlans.value.find(p => p.presetId === c.presetId)?.priority ?? 1,
+          commanderId: c.id,
+          previousEquipmentIds: c.equipmentIds,
+          previousGemIds: Object.fromEntries(c.gemAssignments.map(a => [a.slotType, a.gemId]))
+        }))
+}
+const plannedJobs = computed(createJobs)
+const involvedPresets = computed(() => jobPresets(plannedJobs.value))
+const configurationIssue = computed(() => objectiveOrderIssue(involvedPresets.value))
+const availableEquipment = computed(() => {
+  const released = new Set(targetCommanders.value.map(c => c.id))
+  const reserved = new Set(equipmentAllocations.value.filter(a => !released.has(a.commanderBuildId)).map(a => a.equipmentId))
+  return equipment.value.filter(e => !reserved.has(e.id))
+})
+const availableGems = computed(() => {
+  const released = new Set(targetCommanders.value.map(c => c.id))
+  const reserved = new Set(gemAllocations.value.filter(a => !released.has(a.commanderBuildId)).map(a => a.gemId))
+  return gems.value.filter(g => !reserved.has(g.id))
+})
+const targetChecks = computed(() => inspectTargets(involvedPresets.value, availableEquipment.value, availableGems.value, stats.value))
+const impossibleTargets = computed(() => targetChecks.value.filter(t => t.impossible))
+const missingRequirements = computed(() => requiredEquipmentIssues(involvedPresets.value, availableEquipment.value))
+const inventoryBound = computed(() => Math.min(plannedJobs.value.length,
+  reoptimizing.value ? targetCommanders.value.length : freePositions.value,
+  ...availableSlots.value.map(slot => slot.available)))
+const estimatedMinutes = computed(() => Math.ceil(timeLimitSeconds.value * maximumStages(involvedPresets.value, workspace === 'castellan') / 60))
+const blockedReason = computed(() => {
+  if (configurationIssue.value) return configurationIssue.value
+  if (!ready.value || running.value) return ''
+  if (reoptimizing.value && !targetCommanders.value.length) return '再最適化する対象を選んでください。'
+  if (!reoptimizing.value && !freePositions.value) return '空き枠がありません。再最適化モードを選んでください。'
+  const missing = availableSlots.value.filter(slot => !slot.available).map(slot => SLOT_LABELS[slot.slot])
+  if (missing.length) return missing.join('・') + 'の使用可能な装備がありません。装備を登録するか、再最適化で使用中の装備を対象に含めてください。'
+  if (!plannedJobs.value.length) return 'プリセットまたは不足分のある作成計画を選んでください。'
+  return ''
+})
+
 function applyRequestedMode() {
   const requestedPresetId = typeof route.query.presetId === 'string' ? route.query.presetId : ''
   const requestedPreset = presets.value.find(p => p.id === requestedPresetId)
   if (requestedPreset) selected.value = requestedPreset.id
-  if (route.query.mode === 'single' || requestedPreset) allocationMode.value = 'single'
+  if (route.query.mode === 'new') allocationMode.value = 'new'
+  else if (route.query.mode === 'single' || requestedPreset) allocationMode.value = 'single'
+  else if (route.query.mode === 'all') allocationMode.value = 'all'
 }
 watch(() => [route.query.presetId, route.query.mode], () => {
   if (!running.value && !committing.value && !saving.value) applyRequestedMode()
 })
 async function refreshAvailability() {
-  ;[existingCommanders.value, equipmentAllocations.value] = await Promise.all([
-    db.repo('commanders').getAll(), db.repo('equipmentAllocations').getAll(),
+  ;[existingCommanders.value, equipmentAllocations.value, gemAllocations.value] = await Promise.all([
+    db.repo('commanders').getAll(), db.repo('equipmentAllocations').getAll(), db.repo('gemAllocations').getAll(),
   ])
 }
 onMounted(async () => {
@@ -146,9 +199,10 @@ async function saveResult() {
   if (running.value || saving.value || !result.value || !preset.value) return
   saving.value = true; message.value = ''; saved.value = ''
   try {
-    const build = await saveCommander(db, commanderName.value, preset.value.id, result.value)
+    const build = await saveCommander(db, commanderName.value, preset.value.id, result.value, previewInputs)
     saved.value = '「' + build.name + '」を保存しました。装備・ジェムは使用中として確保されます。'
     result.value = null
+    outcome.value = null
     await refreshAvailability()
     await app.refreshCounts(db)
   } catch (e) { message.value = String(e) } finally { saving.value = false }
@@ -156,7 +210,8 @@ async function saveResult() {
 async function run() {
   if (!canRun.value) return
   running.value = true; message.value = ''; saved.value = ''; result.value = null
-  batchResults.value = []; cpSatPreview.value = []; cpSatStatus.value = ''; cpSatUpperBound.value = null; zeroDiagnostics.value = []; missingSlots.value = []
+  outcome.value = null; searchProgress.value = null;
+  batchResults.value = []; cpSatPreview.value = []; zeroDiagnostics.value = []; missingSlots.value = []
   controller.value = new AbortController()
   try {
     const [commanders, usedEq, usedGem, currentEquipment, currentGems, currentStats, currentPresets] = await Promise.all([
@@ -165,6 +220,7 @@ async function run() {
     ])
     existingCommanders.value = commanders
     equipmentAllocations.value = usedEq
+    gemAllocations.value = usedGem
     equipment.value = currentEquipment
     gems.value = currentGems
     stats.value = currentStats
@@ -179,24 +235,7 @@ async function run() {
       message.value = '再最適化する' + roleLabel + 'がありません。対象を選ぶか、ロックを解除してください。'; return
     }
     const chosenPreset = preset.value
-    const jobs: CpSatJob[] = singleBuild.value
-      ? (chosenPreset ? [{ preset: chosenPreset, ordinal: 1, priority: 1 }] : [])
-      : allocationMode.value === 'new'
-      ? activePlans.value.flatMap(plan => {
-          const chosen = presets.value.find(p => p.id === plan.presetId)
-          if (!chosen) return []
-          const done = commanders.filter(c => c.presetId === chosen.id).length
-          return Array.from({ length: Math.min(100, Math.max(0, plan.count - done)) },
-            (_, index) => ({ preset: chosen, ordinal: done + index + 1, priority: plan.priority }))
-        }).slice(0, 100)
-      : targets.map((c, index) => ({
-          preset: presets.value.find(p => p.id === c.presetId)!,
-          ordinal: index + 101,
-          priority: activePlans.value.find(p => p.presetId === c.presetId)?.priority ?? 1,
-          commanderId: c.id,
-          previousEquipmentIds: c.equipmentIds,
-          previousGemIds: Object.fromEntries(c.gemAssignments.map(a => [a.slotType, a.gemId]))
-        }))
+    const jobs = plannedJobs.value
     if (!jobs.length) { message.value = '最適化対象がありません'; return }
     const releasedIds = new Set(targets.map(c => c.id))
     const reservedEq = usedEq.filter(a => !releasedIds.has(a.commanderBuildId))
@@ -207,29 +246,18 @@ async function run() {
       reservedGemIds: reservedGem.map(a => a.gemId),
       maxAchieved: allocationMode.value === 'new' ? freePositions : undefined,
     }
+    previewInputs = { equipment: currentEquipment, gems: currentGems, stats: currentStats, presets: currentPresets }
     const response = await optimizeCpSat({
       ...input, castellan: workspace === 'castellan', timeLimitSeconds: timeLimitSeconds.value, signal: controller.value.signal,
       endpoint: executionMode.value === 'local' ? localEndpoint : cpSatEndpoint,
       local: executionMode.value === 'local',
       onProgress: (text: string) => { progress.value = text },
+      onSearchProgress: value => { searchProgress.value = value },
     })
+    outcome.value = response
     if (response.achieved === 0) {
-      const reservedEqSet = new Set(reservedEq.map(a => a.equipmentId))
-      const reservedGemSet = new Set(reservedGem.map(a => a.gemId))
-      const availableEq = equipment.value.filter(e => !reservedEqSet.has(e.id))
-      const availableGems = gems.value.filter(g => !reservedGemSet.has(g.id))
-      const slots = SLOT_TYPES
-      missingSlots.value = slots.filter(slot => !availableEq.some(e => e.slotType === slot)).map(slot => SLOT_LABELS[slot])
-      const capMap = knownCaps(stats.value)
-      const effectSum = (effects: { statId: string; value: number }[], id: string) => effects.reduce((n, e) => n + (canonicalStatId(e.statId) === id ? e.value : 0), 0)
-      const distinctPresets = [...new Map(jobs.map(j => [j.preset.id, j.preset])).values()]
-      zeroDiagnostics.value = distinctPresets.flatMap(p => p.targets.map(t => {
-        const id = canonicalStatId(t.statId)
-        const equipmentMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableEq.filter(e => e.slotType === slot).map(e => effectSum(e.effects, id))), 0)
-        const gemMax = slots.reduce((sum, slot) => sum + Math.max(0, ...availableGems.filter(g => g.allowedSlots.includes(slot)).map(g => effectSum(g.effects, id) + (p.name.includes('援軍特化') && id === 'S002' ? effectSum(g.effects, 'G005') : 0))), 0)
-        const optimistic = effectiveValue({ [id]: equipmentMax }, { [id]: gemMax }, capMap, id)
-        return { preset: p.name, stat: statName(t.statId), required: t.minValue, optimistic, impossible: optimistic + 1e-8 < t.minValue }
-      }))
+      missingSlots.value = availableSlots.value.filter(s => !s.available).map(s => SLOT_LABELS[s.slot])
+      zeroDiagnostics.value = targetChecks.value.map(t => ({ ...t, stat: statName(t.statId) }))
     }
     if (allocationMode.value === 'new' && response.builds.length > freePositions) {
       throw Error('最適化サーバーを最新版に更新してから再実行してください。結果が' + roleLabel + 'の空き枠を超えています。')
@@ -242,20 +270,22 @@ async function run() {
     }
     previewInputs = { equipment: currentEquipment, gems: currentGems, stats: currentStats, presets: currentPresets }
     cpSatPreview.value = response.builds
-    cpSatStatus.value = response.status
-    cpSatOptimal.value = response.optimal
-    cpSatUpperBound.value = response.upperBound ?? null
-    message.value = `${response.achieved} / ${response.requested}体が目標達成。理論上の上限：${response.upperBound ?? '算出不可'}体。判定：${response.optimal ? 'OPTIMAL（最適性証明済み）' : response.status + '（最適性未証明）'}。内容を確認して保存してください。`
+    if (!response.achieved) message.value = response.optimal ? '条件を満たす構成がありません。下の診断を確認してください。' : '制限時間内に構成が見つかりませんでした。時間を長くして再実行できます。'
   } catch (e) {
     message.value = e instanceof Error && e.name === 'AbortError'
       ? '画面での待機を中断しました。サーバー側の計算は継続する場合があります。保存はしていません。'
       : String(e)
-  } finally { running.value = false; progress.value = ''; controller.value = null }
+  } finally {
+    running.value = false; progress.value = ''; controller.value = null
+    await nextTick()
+    if (outcome.value) resultHeading.value?.focus()
+  }
 }
 async function saveCpSat() {
   if (running.value || committing.value || !canSaveCpSat.value) return
   committing.value = true; message.value = ''; saved.value = ''
   let count = 0
+  let didSave = false
   try {
     if (allocationMode.value !== 'new') {
       await replaceCommanderAssignments(db, cpSatPreview.value.map(entry => ({
@@ -266,33 +296,42 @@ async function saveCpSat() {
         expectedEquipmentIds: existingCommanders.value.find(c => c.id === entry.job.commanderId)!.equipmentIds,
         expectedGemAssignments: existingCommanders.value.find(c => c.id === entry.job.commanderId)!.gemAssignments
       })), previewInputs)
+      didSave = true
       saved.value = `${cpSatPreview.value.length}体を一括更新しました（変更した装備・ジェムの割当：${movedItems.value}箇所）`
       cpSatPreview.value = []
       await refreshAvailability()
       await app.refreshCounts(db)
       return
     }
-    for (const entry of cpSatPreview.value) {
-      const name = `${entry.job.preset.name} ${entry.job.ordinal}`
-      await saveCommander(db, name, entry.job.preset.id, entry.result)
-      batchResults.value.push({ name, preset: entry.job.preset.name, result: entry.result })
-      count++
-    }
+    const entries = cpSatPreview.value.map(entry => ({
+      name: `${entry.job.preset.name} ${entry.job.ordinal}`, presetId: entry.job.preset.id, result: entry.result,
+    }))
+    await saveCommanders(db, entries, previewInputs)
+    didSave = true
+    batchResults.value = cpSatPreview.value.map((entry, index) => ({
+      name: entries[index].name, preset: entry.job.preset.name, result: entry.result,
+    }))
+    count = entries.length
     saved.value = `${count}体の${roleLabel}を保存しました`
     cpSatPreview.value = []
     await refreshAvailability()
     await app.refreshCounts(db)
   } catch (e) {
     cpSatPreview.value = []
-    message.value = `${count}体を保存したところで停止しました：${String(e)}。再最適化してください。`
+    message.value = didSave ? `保存は完了しましたが、表示の更新に失敗しました：${String(e)}。保存済みの構成を確認してください。`
+      : `保存できませんでした。今回の変更は保存されていません：${String(e)}。再最適化してください。`
     await app.refreshCounts(db)
   } finally { committing.value = false }
 }
 
 </script>
 <template>
-  <h2 class="text-h6 mb-3">{{ roleLabel }}の最適化</h2>
+  <header class="mb-4">
+    <h2 class="text-h5">{{ roleLabel }}の最適化</h2>
+    <p class="text-body-2 text-medium-emphasis mt-1">1. 対象と目標を選ぶ → 2. 組み合わせを探す → 3. 比較して保存</p>
+  </header>
   <v-card v-if="ready" variant="outlined" class="pa-4">
+    <h3 class="text-subtitle-1 font-weight-bold mb-3">1. 対象と目標</h3>
     <v-select v-model="allocationMode" :disabled="running || committing || saving"
       :items="[
         { title: '1体だけ作る', value: 'single' },
@@ -308,10 +347,13 @@ async function saveCpSat() {
       </v-chip>
       <span v-if="!preset.targets.length" class="text-body-2">最低目標の設定はありません。</span>
     </div>
-    <p v-if="singleBuild && preset && workspace === 'castellan'" class="text-body-2 mb-3">
-      最低目標を優先し、目標外の防衛効果を高めます。
-      <template v-if="preset.castellanObjective === 'npc'">城壁人数・乱闘／遠隔兵の戦闘力・中庭戦闘力を重視し、略奪で失われる資源は加点しません。</template>
-    </p>
+    <div v-if="involvedPresets.length" class="mb-4 pa-3 rounded bg-grey-lighten-4">
+      <div v-for="p in involvedPresets" :key="p.id" class="mb-2">
+        <strong class="text-body-2">{{ p.name }}</strong>
+        <p class="text-caption">{{ objectiveDescription(p, workspace === 'castellan') }}</p>
+      </div>
+      <v-btn size="small" variant="text" :disabled="running"  :to="{ path: '/presets', query: singleBuild ? { edit: selected } : {} }">目標・加点効果を編集</v-btn>
+    </div>
     <v-alert v-if="singleBuild && !presets.length" type="warning" variant="tonal" class="mb-3">
       先に<router-link to="/presets">プリセットを登録</router-link>してください。
     </v-alert>
@@ -328,7 +370,7 @@ async function saveCpSat() {
       再最適化できる構成がありません。<router-link to="/commanders">保存済みの構成</router-link>でロックやプリセットを確認してください。
     </v-alert>
     <template v-if="!reoptimizing || targetCommanders.length">
-      <p class="text-body-2 mb-2">使用可能な装備（4部位に各1件以上必要）</p>
+      <p class="text-body-2 mb-2">使用可能な装備（4部位に各1件以上必要）・ジェム {{ availableGems.length }}個</p>
       <EquipmentAvailability :slots="availableSlots" />
     </template>
     <v-alert v-if="!reoptimizing && !freePositions" type="warning" variant="tonal" class="mt-3">
@@ -338,8 +380,21 @@ async function saveCpSat() {
       このPCでPython最適化サーバーを起動してください。
       <a href="https://github.com/takumi307/ggetool/blob/main/optimizer-service/LOCAL_WINDOWS.md" target="_blank" rel="noopener">起動手順</a>
     </v-alert>
+    <v-alert v-if="configurationIssue" type="error" variant="tonal" class="mt-3">{{ configurationIssue }}</v-alert>
+    <v-alert v-if="impossibleTargets.length || missingRequirements.length" type="warning" variant="tonal" class="mt-3">
+      <strong>実行前の条件確認</strong>
+      <div v-for="t in impossibleTargets" :key="t.preset + t.statId">
+        {{ t.preset }}：{{ statName(t.statId) }}の目標 {{ t.required }} に対して、登録済み候補の上限は {{ Number(t.optimistic.toFixed(3)) }}。
+      </div>
+      <div v-for="issue in missingRequirements" :key="issue">{{ issue }}</div>
+      <p class="text-caption mt-1">該当する条件では達成できません。他のプリセットも含めて探索することはできます。</p>
+    </v-alert>
+    <p v-if="plannedJobs.length" class="text-body-2 mt-3">
+      対象 {{ plannedJobs.length }}体 ／ 装備数・空き枠から作れる上限 {{ inventoryBound }}体
+      <span class="text-caption">（効果の条件を考慮すると減る場合があります）</span>
+    </p>
     <section class="mt-4" aria-label="計算設定">
-      <h3 class="text-subtitle-1 mb-2">計算設定</h3>
+      <h3 class="text-subtitle-1 font-weight-bold mb-2">2. 計算設定</h3>
       <v-row dense>
         <v-col cols="12" sm="6">
           <v-select v-model="executionMode" :disabled="running || committing || saving" :items="executionOptions"
@@ -350,18 +405,30 @@ async function saveCpSat() {
             label="計算時間（各段階）" density="comfortable" />
         </v-col>
       </v-row>
+      <p class="text-caption mb-3">探索は最大 {{ maximumStages(involvedPresets, workspace === 'castellan') }}段階、計算時間の目安は最大 {{ estimatedMinutes }}分＋起動・通信時間です。より良い構成を探す場合は時間を長くしてください。</p>
     </section>
+    <p v-if="blockedReason" class="text-body-2 mb-3" role="status">{{ blockedReason }}</p>
     <div class="d-flex align-center ga-2 flex-wrap">
       <v-btn color="primary" :disabled="!canRun" :loading="running" @click="run">{{ singleBuild ? '最適化を実行' : reoptimizing ? 'CP-SATで再最適化' : 'CP-SATで新規作成' }}</v-btn>
       <v-btn v-if="running" color="warning" variant="outlined" @click="controller?.abort()">待機を中断</v-btn>
     </div>
   </v-card>
   <v-progress-linear v-else-if="!message" indeterminate />
-  <v-alert v-if="progress" type="info" class="mt-3">{{ progress }}</v-alert>
+  <v-card v-if="running" class="pa-4 mt-3" role="status" aria-live="polite">
+    <h3 class="text-subtitle-1 mb-2">{{ searchProgress ? STAGE_LABELS[searchProgress.stage] ?? searchProgress.stage : '計算の準備' }}</h3>
+    <p>{{ progress }}</p>
+    <p v-if="searchProgress" class="text-body-2 mt-2">
+      第 {{ searchProgress.stageIndex }} / {{ searchProgress.stageCount }}段階 ／ 発見 {{ searchProgress.achieved }}体・人数の上限 {{ searchProgress.upperBound }}体
+    </p>
+    <v-progress-linear indeterminate color="primary" class="mt-3" />
+  </v-card>
+  <v-card v-if="outcome && !running" class="pa-4 mt-3">
+    <h3 ref="resultHeading" tabindex="-1" class="text-subtitle-1 font-weight-bold mb-3">3. 探索結果を確認</h3>
+    <OptimizationSummary :outcome="outcome" />
+  </v-card>
   <v-card v-if="cpSatPreview.length" class="pa-4 mt-3">
     <h3 class="text-subtitle-1 mb-2">CP-SAT最適化結果（{{ cpSatPreview.length }}体）</h3>
-    <v-chip :color="cpSatOptimal ? 'success' : 'warning'" class="mb-3">{{ cpSatOptimal ? 'OPTIMAL：最適性証明済み' : cpSatStatus + '：暫定解' }}</v-chip>
-    <div v-if="cpSatUpperBound !== null" class="mb-3">達成 {{ cpSatPreview.length }}体 ／ 理論上の上限 {{ cpSatUpperBound }}体 <span class="text-medium-emphasis">（差 {{ Math.max(0, cpSatUpperBound - cpSatPreview.length) }}体）</span></div>
+
     <v-alert v-if="allocationMode !== 'new'" type="info" variant="tonal" class="mb-3">
       現在の構成から変更する装備・ジェム：{{ movedItems }}箇所。
       {{ canSaveCpSat ? '結果を確認してから一括更新できます。' : '対象全員が目標を達成した結果のみ保存できます。' }}
@@ -382,10 +449,7 @@ async function saveCpSat() {
             <div v-for="(effect, i) in itemEffects(slot, entry.result)" :key="i" class="text-body-2">{{ effectText(effect.statId, effect.value) }}</div>
             <div>ジェム：{{ gemName(entry.result.gemAssignments.find(a => a.slotType === slot)?.gemId) }}</div>
           </div>
-          <div v-if="workspace === 'castellan'" class="mt-3">
-            <strong>上限適用後の効果</strong>
-            <div v-for="(value, id) in shownTotals(entry.result)" :key="id">{{ effectText(String(id), value) }}</div>
-          </div>
+          <BuildStatsPreview :result="entry.result" :previous="existingCommanders.find(c => c.id === entry.job.commanderId)" :equipment="equipment" :gems="gems" :stats="stats" />
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
@@ -396,7 +460,7 @@ async function saveCpSat() {
     <v-alert type="info" variant="tonal" class="mb-3">下記の「楽観的最大値」は、各部位の装備・ジェムの最高値を個別に合算した上界です。同じジェムを複数部位で数える場合があり、実際に組める保証はありません。最低目標未満なら、その効果単独でも達成不可能です。</v-alert>
     <v-table density="compact"><thead><tr><th>プリセット</th><th>効果</th><th>最低目標</th><th>楽観的最大値</th><th>判定</th></tr></thead>
       <tbody><tr v-for="(d, i) in zeroDiagnostics" :key="i"><td>{{ d.preset }}</td><td>{{ d.stat }}</td><td>{{ d.required }}</td><td>{{ Number(d.optimistic.toFixed(3)) }}</td><td>{{ d.impossible ? '単独でも達成不可' : '単独では可能性あり' }}</td></tr></tbody></v-table>
-    <div class="text-caption mt-2">全項目が「可能性あり」でも、5条件の同時達成や装備・ジェムの重複禁止によって0体になる場合があります。設定値を自動変更することはありません。</div>
+    <div class="text-caption mt-2">全項目が「可能性あり」でも、複数条件の同時達成や装備・ジェムの重複禁止によって0体になる場合があります。設定値を自動変更することはありません。</div>
   </v-card>
   <v-alert v-if="message" type="warning" class="mt-4">{{ message }}</v-alert>
   <v-alert v-if="saved" type="success" class="mt-4">{{ saved }} <router-link to="/commanders">保存済み{{ roleLabel }}を確認</router-link></v-alert>
@@ -438,16 +502,7 @@ async function saveCpSat() {
       </div>
     </v-card>
     <v-card class="pa-3 mt-3">
-      <h3 class="text-subtitle-1 mb-2">目標達成状況</h3>
-      <div v-for="s in result.shortfalls" :key="s.statId">
-        {{ statName(s.statId) }}：{{ s.actual }} / {{ s.required }}
-        <v-chip size="x-small" :color="s.missing ? 'warning' : 'success'">{{ s.missing ? '不足 ' + s.missing : '達成' }}</v-chip>
-      </div>
-      <h3 class="text-subtitle-1 mt-3 mb-2">全ステータス</h3>
-      <div v-for="(value, id) in shownTotals(result)" :key="id">{{ statName(String(id)) }}：{{ value }}</div>
-      <v-alert v-if="result.overflow.length" type="warning" variant="tonal" class="mt-3">
-        装備の上限超過：{{ result.overflow.map(s => statName(s.statId) + ' ' + s.raw + ' / ' + s.cap).join('、') }}
-      </v-alert>
+      <BuildStatsPreview :result="result" :equipment="equipment" :gems="gems" :stats="stats" />
     </v-card>
   </template>
 </template>

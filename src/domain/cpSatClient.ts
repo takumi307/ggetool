@@ -6,7 +6,15 @@ import type { OptimizationResult } from './optimizer'
 
 export interface CpSatJob { preset: BuildPreset; ordinal: number; priority: number; commanderId?: string; previousEquipmentIds?: Partial<Record<SlotType, string>>; previousGemIds?: Partial<Record<SlotType, string>> }
 export interface CpSatBuild { job: CpSatJob; result: OptimizationResult }
+export interface CpSatStage { id: string; status: string; value: number; bound?: number | null }
+export interface CpSatProgress {
+  stage: string; stageIndex: number; stageCount: number
+  achieved: number; upperBound: number; countOptimal: boolean; elapsedSeconds: number
+}
 export interface CpSatOutcome {
+  countOptimal?: boolean
+  stages?: CpSatStage[]
+  elapsedSeconds?: number
   status: string
   optimal: boolean
   achieved: number
@@ -24,6 +32,9 @@ interface ServerBuild {
   overflow: OptimizationResult['overflow']
 }
 interface ServerResponse {
+  countOptimal?: boolean
+  stages?: CpSatStage[]
+  elapsedSeconds?: number
   status: string
   optimal: boolean
   achieved: number
@@ -49,6 +60,7 @@ export async function optimizeCpSat(input: {
   endpoint?: string
   local?: boolean
   onProgress?: (message: string) => void
+  onSearchProgress?: (progress: CpSatProgress) => void
 }): Promise<CpSatOutcome> {
   const endpoint = input.endpoint ?? cpSatEndpoint
   if (!endpoint) throw new Error('CP-SAT APIが未設定です。VITE_OPTIMIZER_API_URLを設定してください。')
@@ -70,7 +82,7 @@ export async function optimizeCpSat(input: {
     requestId,
     castellan: input.castellan,
     objectiveOrder,
-    equipment: input.equipment.map(({ id, slotType, effects }) => ({ id, slotType, effects })),
+    equipment: input.equipment.map(({ id, slotType, effects }) => ({ id, slotType, effects: effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })) })),
     gems: input.gems.map(({ id, allowedSlots, effects }) => ({
       id, allowedSlots, effects: effects.map(e => ({ ...e, statId: canonicalStatId(e.statId) })),
     })),
@@ -126,15 +138,31 @@ export async function optimizeCpSat(input: {
   const waitMs = input.timeLimitSeconds * 1000 * (objectiveOrder ? objectiveOrder.length + 1 : input.castellan ? 3 : 2) + 120000
   const deadline = Date.now() + waitMs
   let data: ServerResponse | undefined
+  let failures = 0
   while (Date.now() < deadline) {
-    await wait(3000)
-    const poll = await fetch(endpoint + '/jobs/' + started.jobId, { signal: input.signal })
-    if (poll.status === 404) throw new Error('Renderが再起動し、計算ジョブが失われました。再実行してください。')
+    await wait(Math.min(10000, 3000 + failures * 1000))
+    let poll: Response
+    try {
+      poll = await fetch(endpoint + '/jobs/' + started.jobId, { signal: input.signal })
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      failures++
+      input.onProgress?.('通信の復帰を待っています。開始済みの計算結果に再接続します…')
+      continue
+    }
+    if (transient(poll.status) || poll.status === 429) {
+      failures++
+      input.onProgress?.('サーバーとの通信を再試行しています。計算は再送しません…')
+      continue
+    }
+    if (poll.status === 404) throw new Error('計算サーバーが再起動し、計算ジョブが消えました。再実行してください。')
     if (!poll.ok) throw new Error('計算状況の取得に失敗: HTTP ' + poll.status)
-    const state = await poll.json() as { state: string; result?: ServerResponse; error?: string }
+    failures = 0
+    const state = await poll.json() as { state: string; result?: ServerResponse; error?: string; progress?: CpSatProgress }
     if (state.state === 'failed') throw new Error('CP-SAT計算エラー: ' + (state.error ?? '不明'))
     if (state.state === 'completed') { data = state.result; break }
-    input.onProgress?.('CP-SAT計算中… 経過 ' + Math.round((waitMs - (deadline - Date.now())) / 1000) + '秒')
+    if (state.progress) input.onSearchProgress?.(state.progress)
+    input.onProgress?.('組み合わせを探索中… 経過 ' + Math.round((waitMs - (deadline - Date.now())) / 1000) + '秒')
   }
   if (!data) throw new Error('計算待ちが制限時間を超えました。Renderのログを確認してください。')
   if (!Array.isArray(data.builds)) throw new Error('CP-SAT APIから不正な応答が返されました')
@@ -146,9 +174,14 @@ export async function optimizeCpSat(input: {
   const usedEq = new Set<string>()
   const usedGem = new Set<string>()
   const builds: CpSatBuild[] = []
+  const usedJobs = new Set<string>()
   for (const b of data.builds) {
-    const job = jobs.get(b.presetId + ':' + b.ordinal)
+    const jobKey = b.presetId + ':' + b.ordinal
+    const job = jobs.get(jobKey)
+    if (usedJobs.has(jobKey)) throw new Error('APIが同じ対象を複数回返しました')
+    usedJobs.add(jobKey)
     if (!job) throw new Error('CP-SAT APIが未知のビルドを返しました')
+    if (!b.equipmentIds || !Array.isArray(b.gemAssignments)) throw new Error('APIの装備構成が不正です')
     const slots = ['helmet', 'weapon', 'armor', 'artifact'] as const
     for (const slot of slots) {
       const id = b.equipmentIds[slot]
@@ -183,6 +216,6 @@ export async function optimizeCpSat(input: {
       evaluated: 0, approximate: !data.optimal
     } })
   }
-  if (builds.length !== data.achieved || builds.length > input.jobs.length) throw new Error('APIの件数が不正です')
-  return { status: data.status, optimal: data.optimal, achieved: builds.length, upperBound: data.upperBound, requested: data.requested, builds }
+  if (data.requested !== input.jobs.length || builds.length !== data.achieved || builds.length > input.jobs.length || (input.maxAchieved !== undefined && builds.length > input.maxAchieved)) throw new Error('APIの件数が不正です')
+  return { countOptimal: data.countOptimal, stages: data.stages, elapsedSeconds: data.elapsedSeconds, status: data.status, optimal: data.optimal, achieved: builds.length, upperBound: data.upperBound, requested: data.requested, builds }
 }

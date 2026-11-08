@@ -96,6 +96,7 @@ function optimize(p: BuildPlan) {
   <v-card class="pa-4 mb-4">
     <h3 class="text-subtitle-1 mb-2">全体の進捗</h3>
     <div class="text-h6">{{ totalDone }} / {{ totalCount }} 体</div>
+    <v-btn class="my-3" color="primary" :disabled="totalDone >= totalCount" :to="{ path: '/optimize', query: { mode: 'new' } }">不足分をまとめて最適化</v-btn>
     <v-progress-linear :model-value="totalCount ? totalDone / totalCount * 100 : 0" color="primary" height="8" rounded />
   </v-card>
   <v-card class="pa-4 mb-4">

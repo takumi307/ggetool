@@ -248,3 +248,41 @@ def test_job_submission_is_idempotent():
     assert client.post("/jobs", json=changed).status_code == 409
     from app import _executor
     _executor.submit(lambda: None).result(timeout=15)
+
+OBJECTIVE_ORDER = ["planPriority", "weighted", "overshoot", "stability"]
+
+def test_custom_weight_order_changes_result_before_stability():
+    p = payload()
+    p["jobs"] = p["jobs"][:1]
+    job = p["jobs"][0]
+    job["previousEquipmentIds"] = {"helmet": "h1"}
+    job["scoring"] = [{"id": "speed", "scale": 20, "weight": 2}]
+    p["equipment"][1]["effects"].append({"statId": "speed", "value": 20})
+    p["objectiveOrder"] = OBJECTIVE_ORDER
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] and result["builds"][0]["equipmentIds"]["helmet"] == "h2"
+    p["objectiveOrder"] = ["planPriority", "stability", "weighted", "overshoot"]
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] and result["builds"][0]["equipmentIds"]["helmet"] == "h1"
+    job["keepEquipment"] = False
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] and result["builds"][0]["equipmentIds"]["helmet"] == "h2"
+
+def test_custom_overshoot_minimize_or_reward():
+    p = payload()
+    p["jobs"] = p["jobs"][:1]
+    p["equipment"][1]["effects"][0]["value"] = 15
+    p["objectiveOrder"] = OBJECTIVE_ORDER
+    for mode, helmet in [("minimize", "h1"), ("reward", "h2")]:
+        p["jobs"][0]["overshoot"] = mode
+        result = client.post("/optimize", json=p).json()
+        assert result["optimal"] and result["builds"][0]["equipmentIds"]["helmet"] == helmet
+
+def test_custom_overshoot_never_sacrifices_count():
+    p = payload()
+    p["equipment"][1]["effects"][0]["value"] = 15
+    p["objectiveOrder"] = ["overshoot", "weighted", "planPriority", "stability"]
+    for job in p["jobs"]:
+        job["overshoot"] = "minimize"
+    result = client.post("/optimize", json=p).json()
+    assert result["optimal"] and result["achieved"] == 2

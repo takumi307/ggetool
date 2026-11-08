@@ -14,24 +14,48 @@ const name = ref(''), slotType = ref<SlotType>(requestedSlot ?? 'helmet'), memo 
 const allowedSlots = ref<SlotType[]>([...SLOT_TYPES])
 const emptyEffect = (): EffectEntry => ({ statId: '', value: 0 })
 const effects = ref<EffectEntry[]>(Array.from({ length: 3 }, emptyEffect)), stats = ref<StatDefinition[]>([])
-// Common leading effects observed in the 140-item equipment backup.
-const commonEffects: Record<SlotType, string[]> = workspace === 'castellan' ? {
-  weapon: ['C008', 'C009', 'C007'],
-  armor: ['C004', 'C005', 'C006'],
+const equipmentHistory = ref<Equipment[]>([])
+const gemTarget = ref<'lord' | 'npc' | 'all' | null>(null)
+const gemTargets = [
+  { title: '城主ターゲット', value: 'lord' },
+  { title: 'NPCターゲット', value: 'npc' },
+  { title: 'すべての効果', value: 'all' },
+]
+const fallbackEffects: Record<SlotType, string[]> = workspace === 'castellan' ? {
+  weapon: ['C001', 'C002', 'C005'],
+  armor: ['C005', 'C006', 'C003'],
   helmet: ['C004', 'C005', 'C006'],
-  artifact: ['C008', 'C009', 'C007'],
+  artifact: ['C011', 'C002', 'C007'],
 } : {
-  weapon: ['S001', 'S002'],
-  armor: ['S004', 'S006'],
-  helmet: ['S005', 'S007'],
-  artifact: ['S008'],
+  weapon: ['S001', 'S002', 'S006'],
+  armor: ['S004', 'S006', 'S005'],
+  helmet: ['S005', 'S007', 'S008'],
+  artifact: ['S008', 'S001', 'S002'],
 }
 function prefillEffects(slot: SlotType) {
   if (props.kind !== 'equipment' || editId.value) return
-  const ids = commonEffects[slot].filter(id => stats.value.some(s => s.id === id && s.category === 'equipment'))
+  const validIds = new Set(stats.value.filter(stat => stat.category === 'equipment').map(stat => stat.id))
+  const combinations = new Map<string, number>()
+  for (const item of equipmentHistory.value) {
+    if (item.slotType !== slot) continue
+    const ids = item.effects.slice(0, 3).map(effect => effect.statId)
+    if (ids.length !== 3 || !ids.every(id => validIds.has(id))) continue
+    const key = JSON.stringify(ids)
+    combinations.set(key, (combinations.get(key) ?? 0) + 1)
+  }
+  const fallback = fallbackEffects[slot].filter(id => validIds.has(id))
+  let ids = fallback
+  let bestCount = combinations.get(JSON.stringify(fallback)) ?? 0
+  for (const [key, count] of combinations) {
+    if (count <= bestCount) continue
+    bestCount = count
+    ids = JSON.parse(key) as string[]
+  }
   effects.value = Array.from({ length: 3 }, (_, i) => ({ statId: ids[i] ?? '', value: 0 }))
 }
-watch(slotType, prefillEffects)
+watch(slotType, () => {
+  if (effects.value.every(effect => effect.value === 0)) prefillEffects(slotType.value)
+})
 watch([name, slotType, memo, effects, allowedSlots], () => { duplicates.value = []; duplicateConfirmed.value = false }, { deep: true })
 const duplicates = ref<(Equipment | Gem)[]>([])
 const duplicateConfirmed = ref(false)
@@ -41,22 +65,55 @@ const normalize = (item: Equipment | Gem) => JSON.stringify({
 })
 const error = ref(''), saving = ref(false), createdAt = ref('')
 const editId = computed(() => typeof route.params.id === 'string' ? route.params.id : '')
-const choices = computed(() => stats.value.filter(s => s.category === (props.kind === 'equipment' ? 'equipment' : 'gem')).map(s => ({ title: s.name, value: s.id })))
+function targetForStat(stat: StatDefinition): 'lord' | 'npc' | null {
+  if (/^CNG\d+$/.test(stat.id) || /^G00[1-79]$/.test(stat.id)) return 'npc'
+  if (/^CPG\d+$/.test(stat.id)) return 'lord'
+  const npc = /NPC/i.test(stat.name)
+  const lord = stat.name.includes('城主')
+  return npc === lord ? null : npc ? 'npc' : 'lord'
+}
+const choices = computed(() => {
+  const category = props.kind === 'equipment' ? 'equipment' : 'gem'
+  const available = stats.value.filter(stat => stat.category === category)
+  if (category === 'equipment' || gemTarget.value === 'all') return available
+  if (!gemTarget.value) return []
+  return [
+    ...available.filter(stat => targetForStat(stat) === gemTarget.value),
+    ...available.filter(stat => targetForStat(stat) === null),
+  ]
+})
+function effectChoices(id: string) {
+  const selected = stats.value.find(stat => stat.id === id)
+  const visible = selected && !choices.value.includes(selected) ? [...choices.value, selected] : choices.value
+  return visible.map(stat => ({ title: stat.name, value: stat.id }))
+}
 const slots = SLOT_TYPES.map(s => ({ title: SLOT_LABELS[s], value: s }))
 const effectUnit = (id: string) => stats.value.find(s => s.id === id)?.unit || '%'
 onMounted(async () => {
   stats.value = await db.repo('stats').getAll()
-  if (!editId.value) prefillEffects(slotType.value)
-  if (!editId.value) return
+  if (!editId.value) {
+    if (props.kind === 'equipment') {
+      equipmentHistory.value = await db.repo('equipment').getAll()
+      prefillEffects(slotType.value)
+    }
+    return
+  }
   const item = await db.repo(props.kind).get(editId.value)
   if (!item) { error.value = '対象が見つかりません'; return }
   name.value = item.name; memo.value = item.memo; createdAt.value = item.createdAt
   effects.value = item.effects.map(e => ({ ...e }))
   if ('slotType' in item) slotType.value = item.slotType
-  else allowedSlots.value = [...item.allowedSlots]
+  else {
+    allowedSlots.value = [...item.allowedSlots]
+    const targets = new Set(stats.value
+      .filter(stat => item.effects.some(effect => effect.statId === stat.id))
+      .map(targetForStat).filter(target => target !== null))
+    gemTarget.value = targets.size === 1 ? [...targets][0] : 'all'
+  }
 })
 function addEffect() { effects.value.push({ statId: '', value: 0 }) }
 async function save() {
+  if (props.kind === 'gems' && !gemTarget.value) return
   error.value = ''
   const now = new Date().toISOString()
   const id = editId.value || crypto.randomUUID()
@@ -97,15 +154,20 @@ async function save() {
   <v-form @submit.prevent="save">
     <v-text-field v-model="name" :label="kind === 'equipment' ? '装備名（任意）' : 'ジェム名（任意）'" hint="空欄なら保存時に自動で名前を付けます" persistent-hint />
     <v-select v-if="kind === 'equipment'" v-model="slotType" :items="slots" label="装備部位" />
-    <v-select v-else v-model="allowedSlots" :items="slots" multiple chips label="装着可能部位" />
+    <template v-else>
+      <v-select v-model="gemTarget" :items="gemTargets" label="ジェムの対象" placeholder="城主またはNPCを選択" />
+      <v-select v-model="allowedSlots" :items="slots" multiple chips label="装着可能部位" />
+    </template>
     <h3 class="text-subtitle-1 mb-2">効果（初期3件・装備は最大4件）</h3>
-    <p v-if="kind === 'equipment' && !editId" class="text-caption mb-2">部位に共通する効果は自動選択済みです。異なる場合は変更できます。</p>
+    <p v-if="kind === 'equipment' && !editId" class="text-caption mb-2">同じ部位でよく登録される効果を初期表示します。ゲーム画面に合わせて変更できます。</p>
+    <p v-if="kind === 'gems'" class="text-caption mb-2">対象を選ぶと専用効果と共通効果が表示されます。複数の対象の効果を入力するときは「すべての効果」を選んでください。</p>
     <p class="text-caption mb-3">同じ効果を複数選択できます。数値は合算して計算します。</p>
     <v-row v-for="(effect, i) in effects" :key="i" dense align="center">
       <v-col cols="12" sm="7">
         <v-select
           v-model="effect.statId"
-          :items="choices"
+          :items="effectChoices(effect.statId)"
+          :disabled="kind === 'gems' && !gemTarget"
           label="効果"
           density="comfortable"
           class="effect-select"
@@ -126,10 +188,10 @@ async function save() {
       <v-col cols="9" sm="4"><v-text-field v-model.number="effect.value" type="number" step="0.1" min="0"  :label="`効果値 (${effectUnit(effect.statId)})`" density="comfortable" /></v-col>
       <v-col cols="3" sm="1"><v-btn icon="mdi-close" variant="text" size="small" :disabled="effects.length <= 3" @click="effects.splice(i, 1)" /></v-col>
     </v-row>
-    <v-btn class="mb-4" variant="outlined" :disabled="kind === 'equipment' && effects.length >= 4" @click="addEffect">効果を追加</v-btn>
+    <v-btn class="mb-4" variant="outlined" :disabled="kind === 'equipment' ? effects.length >= 4 : !gemTarget" @click="addEffect">効果を追加</v-btn>
     <v-textarea v-model="memo" label="メモ" rows="2" />
     <div class="d-flex ga-2">
-      <v-btn type="submit" color="primary" :loading="saving">保存</v-btn>
+      <v-btn type="submit" color="primary" :loading="saving" :disabled="kind === 'gems' && !gemTarget">保存</v-btn>
       <v-btn variant="outlined" @click="router.back()">戻る</v-btn>
     </div>
   </v-form>

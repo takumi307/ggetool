@@ -113,23 +113,37 @@ export async function optimizeCpSat(input: {
     timeLimitSeconds: input.timeLimitSeconds
   })
   const transient = (status: number) => [502, 503, 504, 522, 524].includes(status)
+  // Render may return 502 while waking up. Give it time to recover without
+  // starting a second job if it already accepted the first submission.
+  const submissionDeadline = Date.now() + 120000
+  let retryDelay = 2000
   let response: Response | undefined
-  for (let attempt = 1; attempt <= (requestId ? 3 : 1); attempt++) {
-    input.onProgress?.(attempt === 1 ? '計算データをサーバーへ送信中…' : `Renderの応答を待って再送信中（${attempt}/3）…`)
+  input.onProgress?.('計算データをサーバーへ送信中…')
+  while (true) {
+    const remaining = submissionDeadline - Date.now()
+    if (requestId && remaining <= 0) break
+    const timeout = requestId ? AbortSignal.timeout(Math.min(58000, remaining)) : undefined
+    const signal = timeout && input.signal ? AbortSignal.any([timeout, input.signal]) : timeout ?? input.signal
     response = await fetch(endpoint + '/jobs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: input.signal, body,
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal, body,
     }).catch(error => {
       if (input.signal?.aborted) throw error
       return undefined
     })
-    if (response && !transient(response.status)) break
-    if (requestId && attempt < 3) await wait(2000)
+    if (!requestId || (response && !transient(response.status))) break
+    await response?.body?.cancel().catch(() => {})
+    const timeLeft = submissionDeadline - Date.now()
+    if (timeLeft <= 0) break
+    input.onProgress?.('Renderの応答を待っています。復帰後に計算を開始します…')
+    await wait(Math.min(retryDelay, timeLeft))
+    retryDelay = Math.min(retryDelay * 2, 12000)
   }
   if (!response) throw new Error(input.local
     ? 'このPCの計算サーバーに接続できません。サーバーの起動とブラウザのローカルネットワーク許可を確認してください。'
     : 'Renderへの送信中に接続が途切れました。少し待ってから再実行してください。')
   if (response.status === 429) throw new Error('計算サーバーが別の計算を実行中です。完了後に再実行してください。')
-  if (transient(response.status)) throw new Error('計算サーバーの応答を受け取れませんでした（HTTP ' + response.status + '）。少し待って再実行してください。')
+  if (transient(response.status)) throw new Error('計算サーバーの応答を受け取れませんでした（HTTP ' + response.status + '）。' +
+    (requestId ? '2分間再試行しました。Renderの稼働状況を確認してください。' : '少し待って再実行してください。'))
   if (!response.ok) throw new Error('計算を開始できません（HTTP ' + response.status + '）。')
   const started = await response.json() as { jobId: string; castellan?: boolean; objectiveVersion?: number }
   if (objectiveOrder && started.objectiveVersion !== 1) throw new Error('詳細設定を使うには計算サーバーを最新版に更新してください。')

@@ -1,13 +1,16 @@
 import { expect, it, vi } from 'vitest'
 import { optimizeCpSat } from '@/domain/cpSatClient'
 
-it('retries a timed-out cloud submission with the same request ID', async () => {
+it('waits through a Render startup outage and reuses the same request ID', async () => {
   vi.useFakeTimers()
   const accepted: typeof fetch = async (_url, init) => {
     const { requestId } = JSON.parse(String(init?.body))
     return Response.json({ jobId: requestId, state: 'running', castellan: true }, { status: 202 })
   }
   const fetchMock = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response('Render unavailable', { status: 502 }))
+    .mockResolvedValueOnce(new Response(null, { status: 502 }))
+    .mockResolvedValueOnce(new Response(null, { status: 502 }))
     .mockResolvedValueOnce(new Response(null, { status: 524 }))
     .mockImplementationOnce(accepted)
     .mockResolvedValueOnce(Response.json({
@@ -20,11 +23,13 @@ it('retries a timed-out cloud submission with the same request ID', async () => 
       reservedEquipmentIds: [], reservedGemIds: [], timeLimitSeconds: 5,
     })
     const completed = expect(result).resolves.toMatchObject({ status: 'OPTIMAL' })
-    await vi.advanceTimersByTimeAsync(5000)
+    await vi.advanceTimersByTimeAsync(29000)
     await completed
     const body = fetchMock.mock.calls[0][1]?.body
-    expect(fetchMock.mock.calls[1][1]?.body).toBe(body)
-    expect(fetchMock.mock.calls[2][0]).toBe('/api/optimizer/jobs/' + JSON.parse(String(body)).requestId)
+    const submissions = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
+    expect(submissions).toHaveLength(5)
+    expect(submissions.every(([, init]) => init?.body === body)).toBe(true)
+    expect(fetchMock.mock.calls[5][0]).toBe('/api/optimizer/jobs/' + JSON.parse(String(body)).requestId)
   } finally {
     vi.useRealTimers()
     vi.unstubAllGlobals()
